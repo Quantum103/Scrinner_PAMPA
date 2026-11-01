@@ -249,4 +249,16 @@ func TestGetRetriesHTTPTooManyRequests(t *testing.T) {
 			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}
-		fmt.Fprint(w, `{"retC
+		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"list":[]}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	client.httpClient = server.Client()
+	if _, err := client.FetchLinearTickers(context.Background()); err != nil {
+		t.Fatalf("запрос после HTTP 429 завершился ошибкой: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("выполнено %d запросов, ожидалось 2", got)
+	}
+}
