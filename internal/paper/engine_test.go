@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	marketanalysis "github.com/Quantum103/Scrinner_PAMPA/internal/analysis"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/strategy"
 )
@@ -456,3 +457,129 @@ func TestEntryRejectsFundingTimestampThatAlreadyPassed(t *testing.T) {
 	}
 }
 
+
+
+func TestTrailingStopNeverMovesDownOnPullback(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	engine := testEngine(t, testConfig(), now)
+	openTestPosition(t, engine, now)
+
+	rally := testBook(now.Add(time.Second))
+	rally.Bids = []Level{{Price: 105, Quantity: 100}}
+	rally.Asks = []Level{{Price: 105.1, Quantity: 100}}
+	engine.UpdateBook("TESTUSDT", rally, now.Add(time.Second))
+	position := engine.Snapshot(now.Add(time.Second)).OpenPositions[0]
+	raisedStop := position.StopPrice
+	highWater := position.HighWaterPrice
+
+	pullback := testBook(now.Add(2 * time.Second))
+	pullback.Bids = []Level{{Price: 104, Quantity: 100}}
+	pullback.Asks = []Level{{Price: 104.1, Quantity: 100}}
+	engine.UpdateBook("TESTUSDT", pullback, now.Add(2*time.Second))
+	position = engine.Snapshot(now.Add(2 * time.Second)).OpenPositions[0]
+
+	if math.Abs(position.StopPrice-raisedStop) > 1e-9 {
+		t.Fatalf("stop moved down on pullback: before=%.8f after=%.8f", raisedStop, position.StopPrice)
+	}
+	if math.Abs(position.HighWaterPrice-highWater) > 1e-9 {
+		t.Fatalf("high-water price changed during pullback: before=%.8f after=%.8f", highWater, position.HighWaterPrice)
+	}
+}
+
+func TestOrderFlowExitRequiresConfirmedReversalAndAccountsForPnL(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	engine := testEngine(t, testConfig(), now)
+	entry := openTestPosition(t, engine, now)
+
+	// Первое наблюдение только формирует базовую линию для сравнения.
+	engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(70, 30, 40, 100, 105, now), testBook(now), now)
+
+	firstAt := now.Add(time.Second)
+	firstBook := flowBook(firstAt, 104)
+	engine.UpdateBook("TESTUSDT", firstBook, firstAt)
+	engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(40, 60, -20, 99, 104, firstAt), firstBook, firstAt)
+
+	account := engine.Snapshot(firstAt)
+	if len(account.OpenPositions) != 1 {
+		t.Fatalf("one bearish interval must not close the position: %+v", account.OpenPositions)
+	}
+	if account.OpenPositions[0].OrderFlowConfirmations != 1 {
+		t.Fatalf("confirmations after first bearish interval = %d, want 1", account.OpenPositions[0].OrderFlowConfirmations)
+	}
+
+	secondAt := now.Add(2 * time.Second)
+	secondBook := flowBook(secondAt, 103)
+	engine.UpdateBook("TESTUSDT", secondBook, secondAt)
+	events := engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(35, 65, -30, 98, 103, secondAt), secondBook, secondAt)
+	if len(events) != 2 || events[0].Type != "order_flow_exit_triggered" || events[1].Type != "position_closed" {
+		t.Fatalf("confirmed reversal should trigger and execute a full exit, events=%+v", events)
+	}
+	if events[0].FlowSignalCount < 3 || events[0].FlowConfirmations != 2 {
+		t.Fatalf("exit was not confirmed by 3/4 signals across two intervals: %+v", events[0])
+	}
+
+	account = engine.Snapshot(secondAt)
+	if len(account.OpenPositions) != 0 || len(account.ClosedTrades) != 1 {
+		t.Fatalf("position/history after Order Flow exit is incorrect: %+v", account)
+	}
+	closed := account.ClosedTrades[0]
+	if closed.CloseReason == "" || closed.ExitFee <= 0 || closed.RealizedPnL <= -entry.Fee {
+		t.Fatalf("closed trade does not contain correct exit details: %+v", closed)
+	}
+	if math.Abs(closed.RealizedPnL-account.RealizedPnL) > 1e-8 ||
+		math.Abs(events[1].NetPnL-account.RealizedPnL) > 1e-8 {
+		t.Fatalf("net PnL mismatch: closed=%f event=%f account=%f", closed.RealizedPnL, events[1].NetPnL, account.RealizedPnL)
+	}
+	if account.ReservedMargin != 0 || math.Abs(account.FreeMargin-account.Equity) > 1e-8 {
+		t.Fatalf("margin was not released after closing: %+v", account)
+	}
+	if account.TotalFees <= entry.Fee || account.Balance <= 10 {
+		t.Fatalf("entry/exit fees or realized balance were not accounted for: %+v", account)
+	}
+}
+
+func TestSingleNegativeDeltaDoesNotClosePosition(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	engine := testEngine(t, testConfig(), now)
+	openTestPosition(t, engine, now)
+
+	engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(50, 50, 0, 100, 100, now), testBook(now), now)
+
+	firstAt := now.Add(time.Second)
+	firstBook := flowBook(firstAt, 101)
+	engine.UpdateBook("TESTUSDT", firstBook, firstAt)
+	engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(49, 51, -2, 101, 101, firstAt), firstBook, firstAt)
+
+	secondAt := now.Add(2 * time.Second)
+	secondBook := flowBook(secondAt, 102)
+	engine.UpdateBook("TESTUSDT", secondBook, secondAt)
+	engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(48, 52, -4, 102, 102, secondAt), secondBook, secondAt)
+
+	account := engine.Snapshot(secondAt)
+	if len(account.OpenPositions) != 1 {
+		t.Fatal("negative Delta without the other confirming groups must not close the position")
+	}
+	if account.OpenPositions[0].OrderFlowConfirmations != 0 {
+		t.Fatalf("confirmation streak = %d, want 0 for isolated negative Delta", account.OpenPositions[0].OrderFlowConfirmations)
+	}
+}
+
+func orderFlowSnapshot(buyShare, sellShare, delta, cvd, price float64, at time.Time) marketanalysis.Snapshot {
+	return marketanalysis.Snapshot{
+		Status:               marketanalysis.StatusReady,
+		UpdatedAt:            at,
+		TakerBuySharePercent: &buyShare,
+		TakerSellSharePercent: &sellShare,
+		Delta:                &delta,
+		CVD:                  &cvd,
+		LastPrice:            &price,
+	}
+}
+
+func flowBook(at time.Time, bid float64) Book {
+	return Book{
+		Valid: true, Fresh: true, ReceivedAt: at,
+		Bids: []Level{{Price: bid, Quantity: 100}},
+		Asks: []Level{{Price: bid + 0.1, Quantity: 100}},
+	}
+}
