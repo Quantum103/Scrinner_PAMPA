@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const maxResponseBytes = 8 << 20
+const (
+	maxResponseBytes    = 8 << 20
+	instrumentPageLimit = 1000
+)
 
 type Client struct {
 	baseURL    string
@@ -28,10 +31,29 @@ type Ticker struct {
 	Turnover24h string `json:"turnover24h"`
 }
 
-type tickerResponse struct {
+type instrument struct {
+	Symbol       string `json:"symbol"`
+	ContractType string `json:"contractType"`
+	Status       string `json:"status"`
+	QuoteCoin    string `json:"quoteCoin"`
+}
+
+type apiResponse struct {
 	RetCode int    `json:"retCode"`
 	RetMsg  string `json:"retMsg"`
-	Result  struct {
+}
+
+type instrumentsResponse struct {
+	apiResponse
+	Result struct {
+		NextPageCursor string       `json:"nextPageCursor"`
+		List           []instrument `json:"list"`
+	} `json:"result"`
+}
+
+type tickerResponse struct {
+	apiResponse
+	Result struct {
 		List []Ticker `json:"list"`
 	} `json:"result"`
 }
@@ -45,45 +67,24 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
-// FetchUSDTPerpetualTickers reads public linear tickers and keeps USDT symbols.
+// FetchUSDTPerpetualTickers returns live tickers for active USDT-settled perpetual contracts.
 func (c *Client) FetchUSDTPerpetualTickers(ctx context.Context) ([]Ticker, error) {
-	endpoint, err := url.Parse(c.baseURL + "/v5/market/tickers")
+	symbols, err := c.fetchUSDTPerpetualSymbols(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("build Bybit ticker URL: %w", err)
-	}
-	query := endpoint.Query()
-	query.Set("category", "linear")
-	endpoint.RawQuery = query.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("create Bybit ticker request: %w", err)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request Bybit public tickers: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Bybit public ticker endpoint returned HTTP %s", resp.Status)
+		return nil, err
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return nil, fmt.Errorf("read Bybit ticker response: %w", err)
-	}
 	var payload tickerResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode Bybit ticker response: %w", err)
+	if err := c.get(ctx, "/v5/market/tickers", url.Values{"category": {"linear"}}, &payload); err != nil {
+		return nil, err
 	}
 	if payload.RetCode != 0 {
 		return nil, fmt.Errorf("Bybit public ticker API error %d: %s", payload.RetCode, payload.RetMsg)
 	}
 
-	tickers := make([]Ticker, 0, len(payload.Result.List))
+	tickers := make([]Ticker, 0, len(symbols))
 	for _, ticker := range payload.Result.List {
-		if strings.HasSuffix(ticker.Symbol, "USDT") {
+		if _, ok := symbols[ticker.Symbol]; ok {
 			tickers = append(tickers, ticker)
 		}
 	}
@@ -91,4 +92,72 @@ func (c *Client) FetchUSDTPerpetualTickers(ctx context.Context) ([]Ticker, error
 		return tickers[i].Symbol < tickers[j].Symbol
 	})
 	return tickers, nil
+}
+
+func (c *Client) fetchUSDTPerpetualSymbols(ctx context.Context) (map[string]struct{}, error) {
+	query := url.Values{
+		"category": {"linear"},
+		"limit":    {fmt.Sprint(instrumentPageLimit)},
+	}
+	symbols := make(map[string]struct{})
+	seenCursors := make(map[string]struct{})
+
+	for page := 0; ; page++ {
+		if page >= 20 {
+			return nil, fmt.Errorf("Bybit instruments-info pagination exceeded 20 pages")
+		}
+		var payload instrumentsResponse
+		if err := c.get(ctx, "/v5/market/instruments-info", query, &payload); err != nil {
+			return nil, err
+		}
+		if payload.RetCode != 0 {
+			return nil, fmt.Errorf("Bybit instruments-info API error %d: %s", payload.RetCode, payload.RetMsg)
+		}
+		for _, item := range payload.Result.List {
+			if item.ContractType == "LinearPerpetual" && item.QuoteCoin == "USDT" && item.Status == "Trading" {
+				symbols[item.Symbol] = struct{}{}
+			}
+		}
+
+		cursor := payload.Result.NextPageCursor
+		if cursor == "" {
+			break
+		}
+		if _, exists := seenCursors[cursor]; exists {
+			return nil, fmt.Errorf("Bybit instruments-info returned a repeated pagination cursor")
+		}
+		seenCursors[cursor] = struct{}{}
+		query.Set("cursor", cursor)
+	}
+	return symbols, nil
+}
+
+func (c *Client) get(ctx context.Context, path string, query url.Values, target any) error {
+	endpoint, err := url.Parse(c.baseURL + path)
+	if err != nil {
+		return fmt.Errorf("build Bybit request URL: %w", err)
+	}
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create Bybit public request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request Bybit public API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Bybit public API returned HTTP %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("read Bybit public API response: %w", err)
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return fmt.Errorf("decode Bybit public API response: %w", err)
+	}
+	return nil
 }
