@@ -238,3 +238,32 @@ func TestMomentumAndVolumeAcceleration(t *testing.T) {
 		t.Fatalf("volume acceleration = %v, want 210%%", got.VolumeAccelerationPercent)
 	}
 }
+
+
+func TestFlowTradeCountAndLargestTradeConcentration(t *testing.T) {
+	cfg := testConfig()
+	now := fixedNow()
+	analyzer := newTestAnalyzer(t, cfg, now.Add(-time.Minute), now)
+	seedIntervals(t, analyzer, now)
+	addTrade(t, analyzer, now.Add(-4*time.Second), "Buy", 10, 100.01)
+	addTrade(t, analyzer, now.Add(-2*time.Second), "Sell", 2, 100.01)
+	addTrade(t, analyzer, now.Add(-time.Second), "Buy", 5, 100.01)
+
+	got := analyzer.Snapshot("BTCUSDT", now, true, freshBook(now))
+	if got.FlowTradeCount != 4 {
+		t.Fatalf("flow trade count = %d, want 4", got.FlowTradeCount)
+	}
+	if got.LargestTradeSharePercent == nil {
+		t.Fatal("largest trade concentration is missing")
+	}
+	want := 10.0 / 18.0 * 100
+	if math.Abs(*got.LargestTradeSharePercent-want) > 0.000001 {
+		t.Fatalf("largest trade share = %.6f, want %.6f", *got.LargestTradeSharePercent, want)
+	}
+	if got.LastPrice == nil || *got.LastPrice != 100.01 {
+		t.Fatalf("last price = %v, want 100.01", got.LastPrice)
+	}
+	if got.BidBookLevels != 2 || got.AskBookLevels != 2 {
+		t.Fatalf("book levels = bid:%d ask:%d, want 2/2", got.BidBookLevels, got.AskBookLevels)
+	}
+}

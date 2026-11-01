@@ -149,13 +149,20 @@ type Snapshot struct {
 	BidLiquidityQuote         *float64           `json:"bid_liquidity_quote,omitempty"`
 	AskLiquidityQuote         *float64           `json:"ask_liquidity_quote,omitempty"`
 	Absorption                *bool              `json:"absorption,omitempty"`
+	LastPrice                 *float64           `json:"last_price,omitempty"`
+	FlowTradeCount            int                `json:"flow_trade_count"`
+	LargestTradeSharePercent  *float64           `json:"largest_trade_share_percent,omitempty"`
+	BidBookLevels             int                `json:"bid_book_levels"`
+	AskBookLevels             int                `json:"ask_book_levels"`
 }
 
 type secondBucket struct {
 	BuyVolume  float64
 	SellVolume float64
-	Total      float64
-	LastPrice  float64
+	Total        float64
+	TradeCount   int
+	LargestTrade float64
+	LastPrice    float64
 	LastAt     time.Time
 }
 
@@ -316,6 +323,10 @@ func (a *Analyzer) AddTrade(symbol string, trade Trade) error {
 		bucket.SellVolume += trade.Quantity
 	}
 	bucket.Total += trade.Quantity
+	bucket.TradeCount++
+	if trade.Quantity > bucket.LargestTrade {
+		bucket.LargestTrade = trade.Quantity
+	}
 	if bucket.LastAt.IsZero() || !trade.Time.Before(bucket.LastAt) {
 		bucket.LastPrice = trade.Price
 		bucket.LastAt = trade.Time
@@ -423,6 +434,8 @@ func (a *Analyzer) Snapshot(symbol string, now time.Time, connected bool, book B
 
 	flow, flowOK := a.sumFlow(state, now.Add(-a.cfg.FlowWindow), now)
 	if flowOK && flow.Total > 0 {
+		result.FlowTradeCount = flow.TradeCount
+		result.LargestTradeSharePercent = floatPointer(flow.LargestTrade / flow.Total * 100)
 		result.TakerBuyVolume = floatPointer(flow.Buy)
 		result.TakerSellVolume = floatPointer(flow.Sell)
 		result.TakerBuySharePercent = floatPointer(flow.Buy / flow.Total * 100)
@@ -439,6 +452,7 @@ func (a *Analyzer) Snapshot(symbol string, now time.Time, connected bool, book B
 		ready = false
 	}
 
+	result.LastPrice = floatPointer(state.lastPrice)
 	result.MomentumPercent = make(map[string]float64, len(a.momentumWindow))
 	momentumFlow, flowMomentumOK := a.calculateMomentum(state, now, a.cfg.FlowWindow)
 	for _, window := range a.momentumWindow {
@@ -465,6 +479,8 @@ func (a *Analyzer) Snapshot(symbol string, now time.Time, connected bool, book B
 		result.SpreadBPS = floatPointer(spread)
 		result.BidLiquidityQuote = floatPointer(bidLiquidity)
 		result.AskLiquidityQuote = floatPointer(askLiquidity)
+		result.BidBookLevels = len(book.Bids)
+		result.AskBookLevels = len(book.Asks)
 	} else {
 		ready = false
 	}
@@ -487,9 +503,11 @@ func (a *Analyzer) Snapshot(symbol string, now time.Time, connected bool, book B
 }
 
 type flowTotals struct {
-	Buy   float64
-	Sell  float64
-	Total float64
+	Buy          float64
+	Sell         float64
+	Total        float64
+	TradeCount   int
+	LargestTrade float64
 }
 
 func (a *Analyzer) sumFlow(state *symbolState, from, to time.Time) (flowTotals, bool) {
@@ -505,6 +523,10 @@ func (a *Analyzer) sumFlow(state *symbolState, from, to time.Time) (flowTotals, 
 		result.Buy += bucket.BuyVolume
 		result.Sell += bucket.SellVolume
 		result.Total += bucket.Total
+		result.TradeCount += bucket.TradeCount
+		if bucket.LargestTrade > result.LargestTrade {
+			result.LargestTrade = bucket.LargestTrade
+		}
 	}
 	return result, result.Total > 0
 }

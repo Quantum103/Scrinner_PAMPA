@@ -141,3 +141,45 @@ func TestValidateRejectsInvalidAnalysisConfiguration(t *testing.T) {
 		t.Fatal("ожидалась ошибка для нулевого количества интервалов RVOL")
 	}
 }
+
+
+func TestEntryStrategyDefaultsAndEnvironmentOverrides(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.EntryStrategy.MinRVOL != 3 || cfg.EntryStrategy.MinTakerBuySharePercent != 65 ||
+		cfg.EntryStrategy.ConfirmationObservations != 3 {
+		t.Fatalf("entry defaults = %+v", cfg.EntryStrategy)
+	}
+
+	t.Setenv("ENTRY_MIN_RVOL", "4")
+	t.Setenv("ENTRY_MIN_TAKER_BUY_SHARE_PERCENT", "70")
+	t.Setenv("ENTRY_CONFIRMATION_OBSERVATIONS", "4")
+	t.Setenv("ENTRY_SIGNAL_COOLDOWN", "90s")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() with strategy overrides error = %v", err)
+	}
+	if cfg.EntryStrategy.MinRVOL != 4 || cfg.EntryStrategy.MinTakerBuySharePercent != 70 ||
+		cfg.EntryStrategy.ConfirmationObservations != 4 || cfg.EntryStrategy.SignalCooldown != 90*time.Second {
+		t.Fatalf("strategy overrides = %+v", cfg.EntryStrategy)
+	}
+}
+
+func TestValidateRejectsEntryStrategyWithoutMatchingMomentumAndBookDepth(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg.EntryStrategy.PriceChangeWindow = 2 * time.Minute
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when entry price window is missing from Momentum configuration")
+	}
+	cfg.EntryStrategy.PriceChangeWindow = 5 * time.Minute
+	cfg.Analysis.OrderBookLevels = 3
+	cfg.EntryStrategy.MinBookLevels = 5
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when analyzer book depth is smaller than strategy requirement")
+	}
+}

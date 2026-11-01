@@ -10,6 +10,7 @@ import (
 	"time"
 
 	marketanalysis "github.com/Quantum103/Scrinner_PAMPA/internal/analysis"
+	marketstrategy "github.com/Quantum103/Scrinner_PAMPA/internal/strategy"
 )
 
 type Trade struct {
@@ -49,6 +50,7 @@ type SymbolSnapshot struct {
 	DuplicateTrades     uint64                  `json:"duplicate_trades"`
 	LastTradeReceivedAt time.Time               `json:"last_trade_received_at"`
 	UsableForSignal     bool                    `json:"usable_for_signal"`
+	EntryStrategy       marketstrategy.Decision `json:"entry_strategy"`
 }
 
 type symbolState struct {
@@ -64,6 +66,7 @@ type symbolState struct {
 	tradeCount    int
 	droppedTrades uint64
 	duplicates    uint64
+	lastStrategyEvaluationAt time.Time
 	seenIDs       map[string]struct{}
 	seenOrder     []string
 	seenNext      int
@@ -77,7 +80,10 @@ type Store struct {
 	maxDataAge    time.Duration
 	tradeCapacity int
 	seenCapacity  int
-	analyzer      *marketanalysis.Analyzer
+	analyzer         *marketanalysis.Analyzer
+	strategy         *marketstrategy.Engine
+	strategyInterval time.Duration
+	pendingSignals   []marketstrategy.Signal
 }
 
 func NewStore(depth int, maxDataAge time.Duration, tradeCapacity, seenCapacity int) (*Store, error) {
@@ -85,6 +91,10 @@ func NewStore(depth int, maxDataAge time.Duration, tradeCapacity, seenCapacity i
 }
 
 func NewStoreWithAnalysis(depth int, maxDataAge time.Duration, tradeCapacity, seenCapacity int, analysisConfig marketanalysis.Config) (*Store, error) {
+	return NewStoreWithAnalysisAndStrategy(depth, maxDataAge, tradeCapacity, seenCapacity, analysisConfig, marketstrategy.DefaultConfig())
+}
+
+func NewStoreWithAnalysisAndStrategy(depth int, maxDataAge time.Duration, tradeCapacity, seenCapacity int, analysisConfig marketanalysis.Config, strategyConfig marketstrategy.Config) (*Store, error) {
 	if depth <= 0 || maxDataAge <= 0 || tradeCapacity <= 0 || seenCapacity <= 0 {
 		return nil, errors.New("глубина, срок актуальности и размеры буферов должны быть больше нуля")
 	}
@@ -92,13 +102,19 @@ func NewStoreWithAnalysis(depth int, maxDataAge time.Duration, tradeCapacity, se
 	if err != nil {
 		return nil, fmt.Errorf("создать анализатор рынка: %w", err)
 	}
+	entryStrategy, err := marketstrategy.New(strategyConfig)
+	if err != nil {
+		return nil, fmt.Errorf("создать стратегию поиска входа: %w", err)
+	}
 	return &Store{
-		states:        make(map[string]*symbolState),
-		depth:         depth,
-		maxDataAge:    maxDataAge,
-		tradeCapacity: tradeCapacity,
-		seenCapacity:  seenCapacity,
-		analyzer:      analyzer,
+		states:           make(map[string]*symbolState),
+		depth:            depth,
+		maxDataAge:       maxDataAge,
+		tradeCapacity:    tradeCapacity,
+		seenCapacity:     seenCapacity,
+		analyzer:         analyzer,
+		strategy:         entryStrategy,
+		strategyInterval: strategyConfig.ObservationInterval,
 	}, nil
 }
 
@@ -132,7 +148,9 @@ func (s *Store) startSessionAt(symbols []string, at time.Time) {
 		state.connected = true
 		state.everConnected = true
 		state.book.invalidate()
+		state.lastStrategyEvaluationAt = time.Time{}
 		s.analyzer.StartSession(symbol, at, reconnected)
+		s.strategy.ResetProgress(symbol, "новая WebSocket-сессия; накопление последовательных наблюдений начнётся заново")
 	}
 }
 
@@ -146,7 +164,9 @@ func (s *Store) MarkDisconnected(symbols []string) {
 		}
 		state.connected = false
 		state.book.invalidate()
+		state.lastStrategyEvaluationAt = time.Time{}
 		s.analyzer.MarkDisconnected(symbol, time.Now())
+		s.strategy.ResetProgress(symbol, "WebSocket отключён; новые сигналы заблокированы")
 	}
 }
 
@@ -161,7 +181,9 @@ func (s *Store) MarkRemoved(activeSymbols []string) {
 		if _, ok := active[symbol]; !ok {
 			state.connected = false
 			state.book.invalidate()
+			state.lastStrategyEvaluationAt = time.Time{}
 			s.analyzer.MarkDisconnected(symbol, time.Now())
+			s.strategy.ResetProgress(symbol, "инструмент удалён из активной подписки")
 		}
 	}
 }
@@ -185,8 +207,11 @@ func (s *Store) ApplyOrderBook(message []byte, receivedAt time.Time) error {
 	if err := state.book.apply(parsed, s.depth, s.maxDataAge, receivedAt); err != nil {
 		// Сохраняем время некорректного обновления: анализатор отличит повреждённый стакан от ещё не полученного snapshot.
 		state.book.receivedAt = receivedAt
+		state.lastStrategyEvaluationAt = time.Time{}
+		s.strategy.ResetProgress(parsed.Data.Symbol, "ошибка обновления стакана; подтверждение входа сброшено")
 		return err
 	}
+	s.evaluateStrategy(parsed.Data.Symbol, receivedAt)
 	return nil
 }
 
@@ -201,6 +226,7 @@ func (s *Store) ApplyTrades(message []byte, receivedAt time.Time) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	touched := make(map[string]struct{}, len(parsed.Data))
 	for _, item := range parsed.Data {
 		if item.Symbol == "" || item.ID == "" || item.Timestamp <= 0 {
 			return errors.New("сделка не содержит символ, ID или время")
@@ -222,6 +248,7 @@ func (s *Store) ApplyTrades(message []byte, receivedAt time.Time) error {
 		if state.hasTrade && (receivedAt.Before(state.lastTradeAt) || receivedAt.Sub(state.lastTradeAt) > s.maxDataAge) {
 			state.tradeGap = true
 			s.analyzer.MarkGap(item.Symbol, receivedAt, "обнаружен разрыв между полученными сделками")
+			s.strategy.ResetProgress(item.Symbol, "обнаружен разрыв между полученными сделками")
 		}
 		if _, exists := state.seenIDs[item.ID]; exists {
 			state.duplicates++
@@ -248,6 +275,7 @@ func (s *Store) ApplyTrades(message []byte, receivedAt time.Time) error {
 		}
 		state.lastTrade = trade
 		state.lastTradeAt = receivedAt
+		touched[item.Symbol] = struct{}{}
 		state.hasTrade = true
 		if state.tradeCount == s.tradeCapacity {
 			state.tradeStart = (state.tradeStart + 1) % s.tradeCapacity
@@ -258,6 +286,9 @@ func (s *Store) ApplyTrades(message []byte, receivedAt time.Time) error {
 		index := (state.tradeStart + state.tradeCount) % s.tradeCapacity
 		state.trades[index] = trade
 		state.tradeCount++
+	}
+	for symbol := range touched {
+		s.evaluateStrategy(symbol, receivedAt)
 	}
 	return nil
 }
@@ -270,6 +301,39 @@ func (s *symbolState) rememberTradeID(id string, capacity int) {
 	s.seenOrder[s.seenNext] = id
 	s.seenIDs[id] = struct{}{}
 	s.seenNext = (s.seenNext + 1) % capacity
+}
+
+// evaluateStrategy вызывается после каждого принятого обновления стакана или пачки сделок.
+// Стратегия получает только полностью готовый анализатором и актуальный срез рынка.
+func (s *Store) evaluateStrategy(symbol string, now time.Time) {
+	state := s.states[symbol]
+	if state == nil {
+		return
+	}
+	if !state.lastStrategyEvaluationAt.IsZero() && now.Sub(state.lastStrategyEvaluationAt) < s.strategyInterval {
+		return
+	}
+	state.lastStrategyEvaluationAt = now
+	bookSnapshot := state.book.snapshot(symbol)
+	bookSnapshot.Fresh = withinAge(now, state.book.receivedAt, s.maxDataAge)
+	analysisSnapshot := s.analyzer.Snapshot(symbol, now, state.connected, analysisBook(bookSnapshot))
+	usable := state.connected && state.book.valid && bookSnapshot.Fresh &&
+		state.hasTrade && withinAge(now, state.lastTradeAt, s.maxDataAge) &&
+		withinAge(now, state.lastTrade.TradeTime, s.maxDataAge) && !state.tradeGap
+	_, signal := s.strategy.Evaluate(symbol, analysisSnapshot, usable,
+		len(bookSnapshot.Bids), len(bookSnapshot.Asks), now)
+	if signal != nil {
+		s.pendingSignals = append(s.pendingSignals, *signal)
+	}
+}
+
+// DrainSignals отдаёт новые сигналы логгеру/потребителю ровно один раз.
+func (s *Store) DrainSignals() []marketstrategy.Signal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := append([]marketstrategy.Signal(nil), s.pendingSignals...)
+	s.pendingSignals = nil
+	return result
 }
 
 func (s *Store) Snapshot(symbol string, now time.Time) (SymbolSnapshot, bool) {
@@ -290,7 +354,8 @@ func (s *Store) Snapshot(symbol string, now time.Time) (SymbolSnapshot, bool) {
 		DroppedTrades:       state.droppedTrades,
 		DuplicateTrades:     state.duplicates,
 		LastTradeReceivedAt: state.lastTradeAt,
-	}
+		EntryStrategy:       s.strategy.Snapshot(symbol),
+}
 	if state.hasTrade {
 		lastTrade := state.lastTrade
 		snapshot.LastTrade = &lastTrade

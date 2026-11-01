@@ -12,6 +12,7 @@ import (
 	"time"
 
 	marketanalysis "github.com/Quantum103/Scrinner_PAMPA/internal/analysis"
+	marketstrategy "github.com/Quantum103/Scrinner_PAMPA/internal/strategy"
 )
 
 const (
@@ -40,6 +41,7 @@ type Config struct {
 	TradeBufferCapacity     int
 	SeenTradeIDCapacity     int
 	Analysis                marketanalysis.Config
+	Strategy                marketstrategy.Config
 }
 
 type wireConn interface {
@@ -94,6 +96,7 @@ func DefaultConfig(url string) Config {
 		TradeBufferCapacity:     4096,
 		SeenTradeIDCapacity:     4096,
 		Analysis:                marketanalysis.DefaultConfig(),
+		Strategy:                marketstrategy.DefaultConfig(),
 	}
 }
 
@@ -104,7 +107,7 @@ func NewManager(cfg Config, logger *slog.Logger) (*Manager, error) {
 		cfg.ReconnectMax < cfg.ReconnectMin || cfg.TradeBufferCapacity <= 0 || cfg.SeenTradeIDCapacity <= 0 {
 		return nil, errors.New("некорректные параметры публичного WebSocket Bybit")
 	}
-	store, err := NewStoreWithAnalysis(cfg.Depth, cfg.MaxDataAge, cfg.TradeBufferCapacity, cfg.SeenTradeIDCapacity, cfg.Analysis)
+	store, err := NewStoreWithAnalysisAndStrategy(cfg.Depth, cfg.MaxDataAge, cfg.TradeBufferCapacity, cfg.SeenTradeIDCapacity, cfg.Analysis, cfg.Strategy)
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +359,7 @@ func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
 		if err := m.store.ApplyOrderBook(payload, receivedAt); err != nil {
 			return fmt.Errorf("обновить стакан %s: %w", message.Data.Symbol, err)
 		}
+		m.logSignals()
 	case strings.HasPrefix(envelope.Topic, "publicTrade."):
 		var message tradeMessage
 		if err := json.Unmarshal(payload, &message); err != nil {
@@ -369,6 +373,7 @@ func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
 		if err := m.store.ApplyTrades(payload, receivedAt); err != nil {
 			return fmt.Errorf("сохранить сделки: %w", err)
 		}
+		m.logSignals()
 	}
 	return nil
 }
@@ -462,5 +467,21 @@ func waitContext(ctx context.Context, duration time.Duration) error {
 		return ctx.Err()
 	case <-timer.C:
 		return nil
+	}
+}
+
+func (m *Manager) logSignals() {
+	for _, signal := range m.store.DrainSignals() {
+		m.logger.Info("Сформирован сигнал LONG",
+			"symbol", signal.Symbol,
+			"price", signal.Price,
+			"rvol", signal.RVOL,
+			"taker_buy_percent", signal.TakerBuySharePercent,
+			"delta", signal.Delta,
+			"cvd", signal.CVD,
+			"price_change_percent", signal.PriceChangePercent,
+			"spread_bps", signal.SpreadBPS,
+			"reason", signal.Reason,
+		)
 	}
 }

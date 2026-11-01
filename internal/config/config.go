@@ -9,6 +9,7 @@ import (
 	"time"
 
 	marketanalysis "github.com/Quantum103/Scrinner_PAMPA/internal/analysis"
+	marketstrategy "github.com/Quantum103/Scrinner_PAMPA/internal/strategy"
 )
 
 const MarketCategory = "linear"
@@ -18,8 +19,9 @@ type Config struct {
 	Bybit      BybitConfig
 	MarketData MarketDataConfig
 	WebSocket  WebSocketConfig
-	Analysis   marketanalysis.Config
-	Strategy   StrategyConfig
+	Analysis      marketanalysis.Config
+	Strategy      StrategyConfig
+	EntryStrategy marketstrategy.Config
 	Paper      PaperConfig
 	Costs      CostsConfig
 	Telegram   TelegramConfig
@@ -81,7 +83,8 @@ func Load() (Config, error) {
 			InstrumentRefreshInterval: 15 * time.Minute,
 			MaxTrackedSymbols:         100,
 		},
-		Analysis: marketanalysis.DefaultConfig(),
+		Analysis:      marketanalysis.DefaultConfig(),
+		EntryStrategy: marketstrategy.DefaultConfig(),
 		WebSocket: WebSocketConfig{
 			OrderbookDepth:          50,
 			MaxSymbolsPerConnection: 25,
@@ -177,6 +180,57 @@ func Load() (Config, error) {
 	if cfg.Analysis.OrderBookLevels, err = intValue("ANALYSIS_ORDERBOOK_LEVELS", cfg.Analysis.OrderBookLevels); err != nil {
 		return Config{}, err
 	}
+	if cfg.EntryStrategy.Enabled, err = boolValue("ENTRY_STRATEGY_ENABLED", cfg.EntryStrategy.Enabled); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MinRVOL, err = floatValue("ENTRY_MIN_RVOL", cfg.EntryStrategy.MinRVOL); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MinTakerBuySharePercent, err = floatValue("ENTRY_MIN_TAKER_BUY_SHARE_PERCENT", cfg.EntryStrategy.MinTakerBuySharePercent); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MaxPriceChangePercent, err = floatValue("ENTRY_MAX_PRICE_CHANGE_PERCENT", cfg.EntryStrategy.MaxPriceChangePercent); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.PriceChangeWindow, err = durationValue("ENTRY_PRICE_CHANGE_WINDOW", cfg.EntryStrategy.PriceChangeWindow); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MaxSpreadBPS, err = floatValue("ENTRY_MAX_SPREAD_BPS", cfg.EntryStrategy.MaxSpreadBPS); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MinBidLiquidityQuote, err = floatValue("ENTRY_MIN_BID_LIQUIDITY_QUOTE", cfg.EntryStrategy.MinBidLiquidityQuote); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MinAskLiquidityQuote, err = floatValue("ENTRY_MIN_ASK_LIQUIDITY_QUOTE", cfg.EntryStrategy.MinAskLiquidityQuote); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MinBookLevels, err = intValue("ENTRY_MIN_BOOK_LEVELS", cfg.EntryStrategy.MinBookLevels); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MinTradesInFlowWindow, err = intValue("ENTRY_MIN_TRADES_IN_FLOW_WINDOW", cfg.EntryStrategy.MinTradesInFlowWindow); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MaxSingleTradeSharePercent, err = floatValue("ENTRY_MAX_SINGLE_TRADE_SHARE_PERCENT", cfg.EntryStrategy.MaxSingleTradeSharePercent); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.ConfirmationObservations, err = intValue("ENTRY_CONFIRMATION_OBSERVATIONS", cfg.EntryStrategy.ConfirmationObservations); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.ObservationInterval, err = durationValue("ENTRY_OBSERVATION_INTERVAL", cfg.EntryStrategy.ObservationInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.MaxObservationGap, err = durationValue("ENTRY_MAX_OBSERVATION_GAP", cfg.EntryStrategy.MaxObservationGap); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.SignalCooldown, err = durationValue("ENTRY_SIGNAL_COOLDOWN", cfg.EntryStrategy.SignalCooldown); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.RearmObservations, err = intValue("ENTRY_REARM_OBSERVATIONS", cfg.EntryStrategy.RearmObservations); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntryStrategy.SignalHistoryLimit, err = intValue("ENTRY_SIGNAL_HISTORY_LIMIT", cfg.EntryStrategy.SignalHistoryLimit); err != nil {
+		return Config{}, err
+	}
 	if cfg.Strategy.VolumeMultiplier, err = floatValue("STRATEGY_VOLUME_MULTIPLIER", cfg.Strategy.VolumeMultiplier); err != nil {
 		return Config{}, err
 	}
@@ -254,6 +308,22 @@ func (c Config) Validate() error {
 	}
 	if err := c.Analysis.Validate(); err != nil {
 		return fmt.Errorf("ANALYSIS: %w", err)
+	}
+	if err := c.EntryStrategy.Validate(); err != nil {
+		return fmt.Errorf("ENTRY STRATEGY: %w", err)
+	}
+	foundMoveWindow := false
+	for _, window := range c.Analysis.MomentumWindows {
+		if window == c.EntryStrategy.PriceChangeWindow {
+			foundMoveWindow = true
+			break
+		}
+	}
+	if !foundMoveWindow {
+		return fmt.Errorf("ENTRY_PRICE_CHANGE_WINDOW=%s отсутствует в ANALYSIS_MOMENTUM_WINDOWS", c.EntryStrategy.PriceChangeWindow)
+	}
+	if c.Analysis.OrderBookLevels < c.EntryStrategy.MinBookLevels {
+		return fmt.Errorf("ANALYSIS_ORDERBOOK_LEVELS=%d не может быть меньше ENTRY_MIN_BOOK_LEVELS=%d", c.Analysis.OrderBookLevels, c.EntryStrategy.MinBookLevels)
 	}
 	if c.Strategy.VolumeMultiplier <= 0 {
 		return fmt.Errorf("STRATEGY_VOLUME_MULTIPLIER должен быть больше нуля")
