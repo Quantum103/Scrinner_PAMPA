@@ -538,6 +538,92 @@ func TestOrderFlowExitRequiresConfirmedReversalAndAccountsForPnL(t *testing.T) {
 	}
 }
 
+func TestOrderFlowExitKeepsReasonAcrossPartialClose(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	engine := testEngine(t, testConfig(), now)
+	openTestPosition(t, engine, now)
+	engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(70, 30, 40, 100, 105, now), testBook(now), now)
+
+	firstAt := now.Add(time.Second)
+	firstBook := flowBook(firstAt, 101)
+	engine.UpdateBook("TESTUSDT", firstBook, firstAt)
+	engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(40, 60, -20, 99, 104, firstAt), firstBook, firstAt)
+
+	secondAt := now.Add(2 * time.Second)
+	secondBook := flowBook(secondAt, 102)
+	position := engine.Snapshot(secondAt).OpenPositions[0]
+	secondBook.Bids[0].Quantity = position.RemainingQuantity / 2
+	events := engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(35, 65, -30, 98, 103, secondAt), secondBook, secondAt)
+	if len(events) != 2 || events[1].Type != "position_partially_closed" {
+		t.Fatalf("expected partial Order Flow exit, got %+v", events)
+	}
+
+	pending := engine.Snapshot(secondAt).OpenPositions
+	if len(pending) != 1 || pending[0].ExitReason == "" {
+		t.Fatalf("partial close must preserve a pending exit: %+v", pending)
+	}
+	reason := pending[0].ExitReason
+
+	// Цена одновременно ниже trailing stop, но исходной причиной выхода уже стал Order Flow.
+	// При закрытии остатка менеджер не должен переписать её на Trailing Stop.
+	lastAt := now.Add(3 * time.Second)
+	lastBook := flowBook(lastAt, 90)
+	closeEvents := engine.UpdateBook("TESTUSDT", lastBook, lastAt)
+	_ = closeEvents
+
+	account := engine.Snapshot(lastAt)
+	if len(account.OpenPositions) != 0 || len(account.ClosedTrades) != 1 {
+		t.Fatalf("remaining quantity was not closed: %+v", account)
+	}
+	if account.ClosedTrades[0].CloseReason != reason ||
+		account.ClosedTrades[0].CloseReason != events[0].Reason {
+		t.Fatalf("exit reason changed during partial execution: got %q, want %q", account.ClosedTrades[0].CloseReason, reason)
+	}
+}
+
+func TestOrderFlowExitAppliesDueFundingBeforeFinalPnL(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	engine := testEngine(t, testConfig(), now)
+	openTestPosition(t, engine, now)
+	engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(70, 30, 40, 100, 105, now), testBook(now), now)
+
+	firstAt := now.Add(time.Second)
+	fundingAt := now.Add(2 * time.Second)
+	engine.UpdateMarketData([]bybit.MarketData{{
+		Instrument: bybit.Instrument{
+			Symbol: "TESTUSDT", MinOrderQty: "0.001", QtyStep: "0.001",
+			MinNotionalValue: "5", TickSize: "0.01", MaxMktOrderQty: "1000",
+			FundingInterval: 60,
+		},
+		Ticker: bybit.Ticker{
+			MarkPrice: "101.25", FundingRate: "0.0001", NextFundingTime: fundingAt,
+		},
+	}}, firstAt)
+
+	firstBook := flowBook(firstAt, 101)
+	engine.UpdateBook("TESTUSDT", firstBook, firstAt)
+	engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(40, 60, -20, 99, 104, firstAt), firstBook, firstAt)
+
+	secondBook := flowBook(fundingAt, 100.5)
+	engine.UpdateBook("TESTUSDT", secondBook, fundingAt)
+	events := engine.UpdateOrderFlow("TESTUSDT", orderFlowSnapshot(35, 65, -30, 98, 103, fundingAt), secondBook, fundingAt)
+	if len(events) != 2 || events[1].Type != "position_closed" {
+		t.Fatalf("expected confirmed Order Flow close at funding time, got %+v", events)
+	}
+
+	account := engine.Snapshot(fundingAt)
+	if account.NetFunding >= 0 || len(account.ClosedTrades) != 1 {
+		t.Fatalf("funding was not charged or trade was not archived: %+v", account)
+	}
+	closed := account.ClosedTrades[0]
+	if closed.FundingPaid <= 0 || closed.RealizedPnL >= 0 {
+		t.Fatalf("closed trade PnL must include positive-rate LONG funding outflow: %+v", closed)
+	}
+	if math.Abs(closed.RealizedPnL-account.RealizedPnL) > 1e-8 {
+		t.Fatalf("closed trade/account PnL differ after funding: trade=%f account=%f", closed.RealizedPnL, account.RealizedPnL)
+	}
+}
+
 func TestSingleNegativeDeltaDoesNotClosePosition(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	engine := testEngine(t, testConfig(), now)
