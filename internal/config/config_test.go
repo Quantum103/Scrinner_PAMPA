@@ -183,3 +183,61 @@ func TestValidateRejectsEntryStrategyWithoutMatchingMomentumAndBookDepth(t *test
 		t.Fatal("expected error when analyzer book depth is smaller than strategy requirement")
 	}
 }
+
+
+func TestPaperTradingDefaultsAndEnvironmentOverrides(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Paper.Enabled || cfg.Paper.InitialDepositUSDT != 10 ||
+		cfg.Paper.TargetRiskPercent != 2.5 || cfg.Paper.MaxRiskPercent != 3 ||
+		cfg.Paper.MaxLeverage != 2 || cfg.Paper.MaxMarginPercent != 50 ||
+		cfg.Paper.MaxOpenPositions != 1 || cfg.Paper.TrailingStopPercent != 2.5 {
+		t.Fatalf("unexpected Paper Trading defaults: %+v", cfg.Paper)
+	}
+
+	t.Setenv("PAPER_TRADING_ENABLED", "false")
+	t.Setenv("PAPER_INITIAL_BALANCE_USDT", "25")
+	t.Setenv("PAPER_TARGET_RISK_PERCENT", "2")
+	t.Setenv("PAPER_MAX_RISK_PERCENT", "2.8")
+	t.Setenv("PAPER_MAX_LEVERAGE", "1.5")
+	t.Setenv("PAPER_MAX_MARGIN_PERCENT", "40")
+	t.Setenv("PAPER_MAX_OPEN_POSITIONS", "1")
+	t.Setenv("PAPER_TRAILING_STOP_PERCENT", "3")
+	t.Setenv("PAPER_FEE_RATE", "0.0007")
+	t.Setenv("PAPER_SLIPPAGE_BPS", "8")
+
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() with Paper Trading overrides error = %v", err)
+	}
+	if cfg.Paper.Enabled || cfg.Paper.InitialDepositUSDT != 25 ||
+		cfg.Paper.TargetRiskPercent != 2 || cfg.Paper.MaxRiskPercent != 2.8 ||
+		cfg.Paper.MaxLeverage != 1.5 || cfg.Paper.MaxMarginPercent != 40 ||
+		cfg.Paper.TrailingStopPercent != 3 || cfg.Costs.FeeRate != 0.0007 ||
+		cfg.Costs.SlippageBPS != 8 {
+		t.Fatalf("Paper Trading overrides were not loaded: paper=%+v costs=%+v", cfg.Paper, cfg.Costs)
+	}
+}
+
+func TestPaperTradingRejectsLeverageAndMarginAboveHardLimits(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg.Paper.MaxLeverage = 2.1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when Paper Trading leverage exceeds 2x")
+	}
+	cfg.Paper.MaxLeverage = 2
+	cfg.Paper.MaxMarginPercent = 50.1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when margin allocation exceeds 50%")
+	}
+	cfg.Paper.MaxMarginPercent = 50
+	cfg.Paper.MaxOpenPositions = 2
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when more than one position is allowed")
+	}
+}

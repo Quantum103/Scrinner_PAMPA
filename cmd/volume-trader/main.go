@@ -51,6 +51,7 @@ func main() {
 	wsConfig.SeenTradeIDCapacity = cfg.WebSocket.SeenTradeIDCapacity
 	wsConfig.Analysis = cfg.Analysis
 	wsConfig.Strategy = cfg.EntryStrategy
+	wsConfig.Paper = cfg.PaperEngineConfig()
 	wsManager, err := stream.NewManager(wsConfig, logger)
 	if err != nil {
 		logger.Error("Некорректная конфигурация WebSocket", "ошибка", err)

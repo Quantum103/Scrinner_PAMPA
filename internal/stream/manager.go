@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
+	marketpaper "github.com/Quantum103/Scrinner_PAMPA/internal/paper"
 	marketanalysis "github.com/Quantum103/Scrinner_PAMPA/internal/analysis"
 	marketstrategy "github.com/Quantum103/Scrinner_PAMPA/internal/strategy"
 )
@@ -42,6 +44,7 @@ type Config struct {
 	SeenTradeIDCapacity     int
 	Analysis                marketanalysis.Config
 	Strategy                marketstrategy.Config
+	Paper                   marketpaper.Config
 }
 
 type wireConn interface {
@@ -97,6 +100,7 @@ func DefaultConfig(url string) Config {
 		SeenTradeIDCapacity:     4096,
 		Analysis:                marketanalysis.DefaultConfig(),
 		Strategy:                marketstrategy.DefaultConfig(),
+		Paper:                   marketpaper.DefaultConfig(),
 	}
 }
 
@@ -107,7 +111,7 @@ func NewManager(cfg Config, logger *slog.Logger) (*Manager, error) {
 		cfg.ReconnectMax < cfg.ReconnectMin || cfg.TradeBufferCapacity <= 0 || cfg.SeenTradeIDCapacity <= 0 {
 		return nil, errors.New("некорректные параметры публичного WebSocket Bybit")
 	}
-	store, err := NewStoreWithAnalysisAndStrategy(cfg.Depth, cfg.MaxDataAge, cfg.TradeBufferCapacity, cfg.SeenTradeIDCapacity, cfg.Analysis, cfg.Strategy)
+	store, err := NewStoreWithAnalysisStrategyAndPaper(cfg.Depth, cfg.MaxDataAge, cfg.TradeBufferCapacity, cfg.SeenTradeIDCapacity, cfg.Analysis, cfg.Strategy, cfg.Paper)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +129,16 @@ func NewManager(cfg Config, logger *slog.Logger) (*Manager, error) {
 
 func (m *Manager) Store() *Store {
 	return m.store
+}
+
+// UpdateMarketData передаёт симулятору спецификации контракта и публичные funding-данные Bybit.
+func (m *Manager) UpdateMarketData(items []bybit.MarketData) {
+	m.store.UpdateMarketData(items, time.Now())
+	m.logPaperEvents()
+}
+
+func (m *Manager) PaperSnapshot() marketpaper.AccountSnapshot {
+	return m.store.PaperSnapshot(time.Now())
 }
 
 // SetSymbols объединяет частые обновления: важен только последний полный список инструментов.
@@ -483,5 +497,27 @@ func (m *Manager) logSignals() {
 			"spread_bps", signal.SpreadBPS,
 			"reason", signal.Reason,
 		)
+	}
+	m.logPaperEvents()
+}
+
+func (m *Manager) logPaperEvents() {
+	for _, event := range m.store.DrainPaperEvents() {
+		attributes := []any{
+			"symbol", event.Symbol, "type", event.Type, "reason", event.Reason,
+			"price", event.Price, "quantity", event.Quantity,
+			"notional_usdt", event.Notional, "margin_usdt", event.Margin,
+			"leverage", event.Leverage, "fee_usdt", event.Fee,
+			"risk_usdt", event.RiskUSDT, "risk_percent", event.RiskPercent,
+			"gross_pnl_usdt", event.GrossPnL, "net_pnl_usdt", event.NetPnL,
+			"funding_cash_flow_usdt", event.Funding,
+			"remaining_quantity", event.RemainingQuantity,
+		}
+		switch event.Type {
+		case "entry_rejected", "close_rejected", "funding_data_unavailable", "funding_skipped", "funding_backlog":
+			m.logger.Warn("Событие Paper Trading", attributes...)
+		default:
+			m.logger.Info("Событие Paper Trading", attributes...)
+		}
 	}
 }

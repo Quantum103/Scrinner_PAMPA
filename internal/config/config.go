@@ -10,6 +10,7 @@ import (
 
 	marketanalysis "github.com/Quantum103/Scrinner_PAMPA/internal/analysis"
 	marketstrategy "github.com/Quantum103/Scrinner_PAMPA/internal/strategy"
+	marketpaper "github.com/Quantum103/Scrinner_PAMPA/internal/paper"
 )
 
 const MarketCategory = "linear"
@@ -55,9 +56,14 @@ type StrategyConfig struct {
 }
 
 type PaperConfig struct {
+	Enabled             bool
 	InitialDepositUSDT  float64
-	RiskPerTradePercent float64
+	TargetRiskPercent   float64
+	MaxRiskPercent      float64
+	MaxLeverage         float64
+	MaxMarginPercent    float64
 	MaxOpenPositions    int
+	TrailingStopPercent float64
 }
 
 type CostsConfig struct {
@@ -99,9 +105,14 @@ func Load() (Config, error) {
 			ReversalConfirmations: 2,
 		},
 		Paper: PaperConfig{
+			Enabled:             true,
 			InitialDepositUSDT:  10,
-			RiskPerTradePercent: 1,
+			TargetRiskPercent:   2.5,
+			MaxRiskPercent:      3,
+			MaxLeverage:         2,
+			MaxMarginPercent:    50,
 			MaxOpenPositions:    1,
+			TrailingStopPercent: 2.5,
 		},
 		Costs: CostsConfig{
 			FeeRate:     0.00055,
@@ -240,20 +251,55 @@ func Load() (Config, error) {
 	if cfg.Strategy.ReversalConfirmations, err = intValue("STRATEGY_REVERSAL_CONFIRMATIONS", cfg.Strategy.ReversalConfirmations); err != nil {
 		return Config{}, err
 	}
-	if cfg.Paper.InitialDepositUSDT, err = floatValue("VIRTUAL_DEPOSIT_USDT", cfg.Paper.InitialDepositUSDT); err != nil {
+	if cfg.Paper.Enabled, err = boolValue("PAPER_TRADING_ENABLED", cfg.Paper.Enabled); err != nil {
 		return Config{}, err
 	}
-	if cfg.Paper.RiskPerTradePercent, err = floatValue("RISK_PER_TRADE_PERCENT", cfg.Paper.RiskPerTradePercent); err != nil {
+	if cfg.Paper.InitialDepositUSDT, err = floatValue("PAPER_INITIAL_BALANCE_USDT", cfg.Paper.InitialDepositUSDT); err != nil {
 		return Config{}, err
 	}
-	if cfg.Paper.MaxOpenPositions, err = intValue("MAX_OPEN_POSITIONS", cfg.Paper.MaxOpenPositions); err != nil {
+	if _, exists := os.LookupEnv("PAPER_INITIAL_BALANCE_USDT"); !exists {
+		if cfg.Paper.InitialDepositUSDT, err = floatValue("VIRTUAL_DEPOSIT_USDT", cfg.Paper.InitialDepositUSDT); err != nil {
+			return Config{}, err
+		}
+	}
+	if cfg.Paper.TargetRiskPercent, err = floatValue("PAPER_TARGET_RISK_PERCENT", cfg.Paper.TargetRiskPercent); err != nil {
 		return Config{}, err
 	}
-	if cfg.Costs.FeeRate, err = floatValue("TRADING_FEE_RATE", cfg.Costs.FeeRate); err != nil {
+	if cfg.Paper.MaxRiskPercent, err = floatValue("PAPER_MAX_RISK_PERCENT", cfg.Paper.MaxRiskPercent); err != nil {
 		return Config{}, err
 	}
-	if cfg.Costs.SlippageBPS, err = floatValue("SLIPPAGE_BPS", cfg.Costs.SlippageBPS); err != nil {
+	if cfg.Paper.MaxLeverage, err = floatValue("PAPER_MAX_LEVERAGE", cfg.Paper.MaxLeverage); err != nil {
 		return Config{}, err
+	}
+	if cfg.Paper.MaxMarginPercent, err = floatValue("PAPER_MAX_MARGIN_PERCENT", cfg.Paper.MaxMarginPercent); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.MaxOpenPositions, err = intValue("PAPER_MAX_OPEN_POSITIONS", cfg.Paper.MaxOpenPositions); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.TrailingStopPercent, err = floatValue("PAPER_TRAILING_STOP_PERCENT", cfg.Paper.TrailingStopPercent); err != nil {
+		return Config{}, err
+	}
+	if _, exists := os.LookupEnv("PAPER_MAX_OPEN_POSITIONS"); !exists {
+		if cfg.Paper.MaxOpenPositions, err = intValue("MAX_OPEN_POSITIONS", cfg.Paper.MaxOpenPositions); err != nil {
+			return Config{}, err
+		}
+	}
+	if cfg.Costs.FeeRate, err = floatValue("PAPER_FEE_RATE", cfg.Costs.FeeRate); err != nil {
+		return Config{}, err
+	}
+	if _, exists := os.LookupEnv("PAPER_FEE_RATE"); !exists {
+		if cfg.Costs.FeeRate, err = floatValue("TRADING_FEE_RATE", cfg.Costs.FeeRate); err != nil {
+			return Config{}, err
+		}
+	}
+	if cfg.Costs.SlippageBPS, err = floatValue("PAPER_SLIPPAGE_BPS", cfg.Costs.SlippageBPS); err != nil {
+		return Config{}, err
+	}
+	if _, exists := os.LookupEnv("PAPER_SLIPPAGE_BPS"); !exists {
+		if cfg.Costs.SlippageBPS, err = floatValue("SLIPPAGE_BPS", cfg.Costs.SlippageBPS); err != nil {
+			return Config{}, err
+		}
 	}
 	if cfg.Telegram.BotToken, err = stringValue("TELEGRAM_BOT_TOKEN", ""); err != nil {
 		return Config{}, err
@@ -312,6 +358,9 @@ func (c Config) Validate() error {
 	if err := c.EntryStrategy.Validate(); err != nil {
 		return fmt.Errorf("ENTRY STRATEGY: %w", err)
 	}
+	if err := c.PaperEngineConfig().Validate(); err != nil {
+		return fmt.Errorf("PAPER TRADING: %w", err)
+	}
 	foundMoveWindow := false
 	for _, window := range c.Analysis.MomentumWindows {
 		if window == c.EntryStrategy.PriceChangeWindow {
@@ -333,15 +382,6 @@ func (c Config) Validate() error {
 	}
 	if c.Strategy.ReversalConfirmations <= 0 {
 		return fmt.Errorf("STRATEGY_REVERSAL_CONFIRMATIONS должен быть больше нуля")
-	}
-	if c.Paper.InitialDepositUSDT <= 0 {
-		return fmt.Errorf("VIRTUAL_DEPOSIT_USDT должен быть больше нуля")
-	}
-	if c.Paper.RiskPerTradePercent <= 0 || c.Paper.RiskPerTradePercent > 100 {
-		return fmt.Errorf("RISK_PER_TRADE_PERCENT должен быть больше 0 и не превышать 100")
-	}
-	if c.Paper.MaxOpenPositions <= 0 {
-		return fmt.Errorf("MAX_OPEN_POSITIONS должен быть больше нуля")
 	}
 	if c.Costs.FeeRate < 0 || c.Costs.FeeRate >= 1 {
 		return fmt.Errorf("TRADING_FEE_RATE должен быть в диапазоне [0, 1)")
@@ -440,4 +480,20 @@ func oneOf(value string, options ...string) bool {
 		}
 	}
 	return false
+}
+
+func (c Config) PaperEngineConfig() marketpaper.Config {
+	return marketpaper.Config{
+		Enabled: c.Paper.Enabled,
+		InitialBalanceUSDT: c.Paper.InitialDepositUSDT,
+		TargetRiskPercent: c.Paper.TargetRiskPercent,
+		MaxRiskPercent: c.Paper.MaxRiskPercent,
+		MaxLeverage: c.Paper.MaxLeverage,
+		MaxMarginPercent: c.Paper.MaxMarginPercent,
+		MaxOpenPositions: c.Paper.MaxOpenPositions,
+		TrailingStopPercent: c.Paper.TrailingStopPercent,
+		FeeRate: c.Costs.FeeRate,
+		SlippageBPS: c.Costs.SlippageBPS,
+		MaxBookAge: c.WebSocket.MaxDataAge,
+	}
 }

@@ -116,7 +116,7 @@ func TestFetchLinearTickersParsesMarketFields(t *testing.T) {
 		if r.URL.Path != "/v5/market/tickers" || r.URL.Query().Get("category") != "linear" {
 			t.Errorf("неверный запрос тикеров: %s %s", r.Method, r.URL.String())
 		}
-		fmt.Fprintf(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"symbol":"BTCUSDT","lastPrice":"68000.1","bid1Price":"68000.0","ask1Price":"68000.2","volume24h":"12345.6","turnover24h":"839000000","price24hPcnt":"0.0125","fundingRate":"0.0001","nextFundingTime":"%d"}]}}`, nextFundingMillis)
+		fmt.Fprintf(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"symbol":"BTCUSDT","lastPrice":"68000.1","markPrice":"68000.15","bid1Price":"68000.0","ask1Price":"68000.2","volume24h":"12345.6","turnover24h":"839000000","price24hPcnt":"0.0125","fundingRate":"0.0001","nextFundingTime":"%d"}]}}`, nextFundingMillis)
 	}))
 	defer server.Close()
 
@@ -131,7 +131,7 @@ func TestFetchLinearTickersParsesMarketFields(t *testing.T) {
 	}
 
 	ticker := tickers[0]
-	if ticker.LastPrice != "68000.1" || ticker.BestBidPrice != "68000.0" || ticker.BestAskPrice != "68000.2" {
+	if ticker.LastPrice != "68000.1" || ticker.MarkPrice != "68000.15" || ticker.BestBidPrice != "68000.0" || ticker.BestAskPrice != "68000.2" {
 		t.Errorf("цены не перенесены: %+v", ticker)
 	}
 	if ticker.Volume24h != "12345.6" || ticker.Turnover24h != "839000000" {
@@ -147,7 +147,7 @@ func TestFetchLinearTickersParsesMarketFields(t *testing.T) {
 
 func TestFetchMarketDataJoinsInstrumentSpecificationsAndTicker(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"symbol":"BTCUSDT","lastPrice":"100","bid1Price":"99","ask1Price":"101","volume24h":"10","turnover24h":"1000","price24hPcnt":"0.01","fundingRate":"0.0002","nextFundingTime":"1793510400000"},{"symbol":"OTHERUSDT","lastPrice":"50"}]}}`)
+		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"symbol":"BTCUSDT","lastPrice":"100","markPrice":"100.05","bid1Price":"99","ask1Price":"101","volume24h":"10","turnover24h":"1000","price24hPcnt":"0.01","fundingRate":"0.0002","nextFundingTime":"1793510400000"},{"symbol":"OTHERUSDT","lastPrice":"50"}]}}`)
 	}))
 	defer server.Close()
 
@@ -161,7 +161,7 @@ func TestFetchMarketDataJoinsInstrumentSpecificationsAndTicker(t *testing.T) {
 	if len(marketData) != 1 {
 		t.Fatalf("получено %d записей, ожидалась 1", len(marketData))
 	}
-	if marketData[0].Instrument.MinOrderQty != "0.001" || marketData[0].Ticker.LastPrice != "100" {
+	if marketData[0].Instrument.MinOrderQty != "0.001" || marketData[0].Ticker.LastPrice != "100" || marketData[0].Ticker.MarkPrice != "100.05" {
 		t.Fatalf("рыночные данные и спецификация не объединены: %+v", marketData[0])
 	}
 }

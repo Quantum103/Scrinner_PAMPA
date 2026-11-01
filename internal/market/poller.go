@@ -18,6 +18,10 @@ type SymbolSubscriber interface {
 	SetSymbols(symbols []string)
 }
 
+type MarketDataSubscriber interface {
+	UpdateMarketData(items []bybit.MarketData)
+}
+
 type Poller struct {
 	client                    *bybit.Client
 	interval                  time.Duration
@@ -105,11 +109,15 @@ func (p *Poller) Run(ctx context.Context) {
 			p.logger.Info("Получен снимок рыночных данных Bybit",
 				"контрактов_в_снимке", len(snapshot),
 			)
+			if subscriber, ok := p.subscriber.(MarketDataSubscriber); ok {
+				subscriber.UpdateMarketData(snapshot)
+			}
 			for _, item := range snapshot {
 				ticker := item.Ticker
 				p.logger.Debug("Рыночные данные контракта",
 					"символ", item.Instrument.Symbol,
 					"последняя_цена", ticker.LastPrice,
+					"mark_price", ticker.MarkPrice,
 					"лучшая_покупка", ticker.BestBidPrice,
 					"лучшая_продажа", ticker.BestAskPrice,
 					"объём_24ч", ticker.Volume24h,

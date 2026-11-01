@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
+	marketpaper "github.com/Quantum103/Scrinner_PAMPA/internal/paper"
 	marketanalysis "github.com/Quantum103/Scrinner_PAMPA/internal/analysis"
 	marketstrategy "github.com/Quantum103/Scrinner_PAMPA/internal/strategy"
 )
@@ -50,7 +52,8 @@ type SymbolSnapshot struct {
 	DuplicateTrades     uint64                  `json:"duplicate_trades"`
 	LastTradeReceivedAt time.Time               `json:"last_trade_received_at"`
 	UsableForSignal     bool                    `json:"usable_for_signal"`
-	EntryStrategy       marketstrategy.Decision `json:"entry_strategy"`
+	EntryStrategy       marketstrategy.Decision       `json:"entry_strategy"`
+	PaperAccount        marketpaper.AccountSnapshot `json:"paper_account"`
 }
 
 type symbolState struct {
@@ -84,6 +87,7 @@ type Store struct {
 	strategy         *marketstrategy.Engine
 	strategyInterval time.Duration
 	pendingSignals   []marketstrategy.Signal
+	paper            *marketpaper.Engine
 }
 
 func NewStore(depth int, maxDataAge time.Duration, tradeCapacity, seenCapacity int) (*Store, error) {
@@ -95,6 +99,12 @@ func NewStoreWithAnalysis(depth int, maxDataAge time.Duration, tradeCapacity, se
 }
 
 func NewStoreWithAnalysisAndStrategy(depth int, maxDataAge time.Duration, tradeCapacity, seenCapacity int, analysisConfig marketanalysis.Config, strategyConfig marketstrategy.Config) (*Store, error) {
+	paperConfig := marketpaper.DefaultConfig()
+	paperConfig.MaxBookAge = maxDataAge
+	return NewStoreWithAnalysisStrategyAndPaper(depth, maxDataAge, tradeCapacity, seenCapacity, analysisConfig, strategyConfig, paperConfig)
+}
+
+func NewStoreWithAnalysisStrategyAndPaper(depth int, maxDataAge time.Duration, tradeCapacity, seenCapacity int, analysisConfig marketanalysis.Config, strategyConfig marketstrategy.Config, paperConfig marketpaper.Config) (*Store, error) {
 	if depth <= 0 || maxDataAge <= 0 || tradeCapacity <= 0 || seenCapacity <= 0 {
 		return nil, errors.New("глубина, срок актуальности и размеры буферов должны быть больше нуля")
 	}
@@ -106,6 +116,10 @@ func NewStoreWithAnalysisAndStrategy(depth int, maxDataAge time.Duration, tradeC
 	if err != nil {
 		return nil, fmt.Errorf("создать стратегию поиска входа: %w", err)
 	}
+	paperEngine, err := marketpaper.New(paperConfig)
+	if err != nil {
+		return nil, fmt.Errorf("создать Paper Trading Engine: %w", err)
+	}
 	return &Store{
 		states:           make(map[string]*symbolState),
 		depth:            depth,
@@ -115,6 +129,7 @@ func NewStoreWithAnalysisAndStrategy(depth int, maxDataAge time.Duration, tradeC
 		analyzer:         analyzer,
 		strategy:         entryStrategy,
 		strategyInterval: strategyConfig.ObservationInterval,
+		paper:            paperEngine,
 	}, nil
 }
 
@@ -211,6 +226,8 @@ func (s *Store) ApplyOrderBook(message []byte, receivedAt time.Time) error {
 		s.strategy.ResetProgress(parsed.Data.Symbol, "ошибка обновления стакана; подтверждение входа сброшено")
 		return err
 	}
+	bookForPaper := paperBook(state.book.snapshot(parsed.Data.Symbol), withinAge(receivedAt, state.book.receivedAt, s.maxDataAge))
+	s.paper.UpdateBook(parsed.Data.Symbol, bookForPaper, receivedAt)
 	s.evaluateStrategy(parsed.Data.Symbol, receivedAt)
 	return nil
 }
@@ -324,6 +341,7 @@ func (s *Store) evaluateStrategy(symbol string, now time.Time) {
 		len(bookSnapshot.Bids), len(bookSnapshot.Asks), now)
 	if signal != nil {
 		s.pendingSignals = append(s.pendingSignals, *signal)
+		s.paper.OpenLong(*signal, paperBook(bookSnapshot, bookSnapshot.Fresh), now)
 	}
 }
 
@@ -334,6 +352,39 @@ func (s *Store) DrainSignals() []marketstrategy.Signal {
 	result := append([]marketstrategy.Signal(nil), s.pendingSignals...)
 	s.pendingSignals = nil
 	return result
+}
+
+
+ // UpdateMarketData передаёт Paper Trading реальные спецификации контракта и публичные funding-поля тикера.
+func (s *Store) UpdateMarketData(items []bybit.MarketData, at time.Time) {
+	s.paper.UpdateMarketData(items, at)
+}
+
+func (s *Store) PaperSnapshot(now time.Time) marketpaper.AccountSnapshot {
+	return s.paper.Snapshot(now)
+}
+
+func (s *Store) DrainPaperEvents() []marketpaper.Event {
+	return s.paper.DrainEvents()
+}
+
+func paperBook(snapshot OrderBookSnapshot, fresh bool) marketpaper.Book {
+	book := marketpaper.Book{
+		Valid: snapshot.Valid, Fresh: fresh, ReceivedAt: snapshot.ReceivedAt,
+		Bids: make([]marketpaper.Level, 0, len(snapshot.Bids)),
+		Asks: make([]marketpaper.Level, 0, len(snapshot.Asks)),
+	}
+	for _, level := range snapshot.Bids {
+		book.Bids = append(book.Bids, marketpaper.Level{
+			Price: mustParsePositive(level.Price), Quantity: mustParsePositive(level.Size),
+		})
+	}
+	for _, level := range snapshot.Asks {
+		book.Asks = append(book.Asks, marketpaper.Level{
+			Price: mustParsePositive(level.Price), Quantity: mustParsePositive(level.Size),
+		})
+	}
+	return book
 }
 
 func (s *Store) Snapshot(symbol string, now time.Time) (SymbolSnapshot, bool) {
@@ -355,6 +406,7 @@ func (s *Store) Snapshot(symbol string, now time.Time) (SymbolSnapshot, bool) {
 		DuplicateTrades:     state.duplicates,
 		LastTradeReceivedAt: state.lastTradeAt,
 		EntryStrategy:       s.strategy.Snapshot(symbol),
+		PaperAccount:        s.paper.Snapshot(now),
 }
 	if state.hasTrade {
 		lastTrade := state.lastTrade

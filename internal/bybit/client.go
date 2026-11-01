@@ -50,6 +50,7 @@ type Instrument struct {
 type Ticker struct {
 	Symbol          string
 	LastPrice       string
+	MarkPrice       string
 	BestBidPrice    string
 	BestAskPrice    string
 	Volume24h       string
@@ -114,6 +115,7 @@ type tickerResponse struct {
 type rawTicker struct {
 	Symbol          string `json:"symbol"`
 	LastPrice       string `json:"lastPrice"`
+	MarkPrice       string `json:"markPrice"`
 	Bid1Price       string `json:"bid1Price"`
 	Ask1Price       string `json:"ask1Price"`
 	Volume24h       string `json:"volume24h"`
@@ -217,6 +219,7 @@ func (c *Client) FetchLinearTickers(ctx context.Context) ([]Ticker, error) {
 		tickers = append(tickers, Ticker{
 			Symbol:          item.Symbol,
 			LastPrice:       item.LastPrice,
+			MarkPrice:       item.MarkPrice,
 			BestBidPrice:    item.Bid1Price,
 			BestAskPrice:    item.Ask1Price,
 			Volume24h:       item.Volume24h,
