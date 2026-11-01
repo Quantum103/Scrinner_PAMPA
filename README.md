@@ -4,8 +4,9 @@ A standalone Go service for the first stage of a Bybit USDT Perpetual (Linear) m
 
 ## Current scope
 
-- Reads public Bybit Linear ticker data through REST (`/v5/market/tickers`).
-- Keeps USDT-quoted symbols and limits the tracked list using `MAX_TRACKED_CONTRACTS`.
+- Reads Bybit instrument metadata (`/v5/market/instruments-info`) and public Linear tickers (`/v5/market/tickers`).
+- Keeps only instruments with `contractType=LinearPerpetual`, `quoteCoin=USDT`, and `status=Trading`.
+- Limits the tracked list using `MAX_TRACKED_CONTRACTS`.
 - Repeats public market-data requests at the configured interval.
 - Runs in paper-only mode. The repository contains no order placement, private trading API, Bybit API key, or Bybit API secret implementation.
 - Includes strategy, virtual-account, cost-model, WebSocket, and Telegram configuration placeholders for subsequent stages.
@@ -61,7 +62,7 @@ Stop the service with `Ctrl+C`. It handles interrupt and termination signals.
 | `BYBIT_PUBLIC_WS_URL` | `wss://stream.bybit.com/v5/public/linear` | Public Linear WebSocket URL reserved for a later stage |
 | `MARKET_DATA_ENABLED` | `true` | Enable or disable REST ticker polling |
 | `DATA_UPDATE_INTERVAL` | `2s` | Polling interval, for example `500ms` or `2s` |
-| `MAX_TRACKED_CONTRACTS` | `100` | Maximum number of USDT symbols kept in the current tracked list |
+| `MAX_TRACKED_CONTRACTS` | `100` | Maximum number of active USDT perpetual symbols kept in the current tracked list |
 | `STRATEGY_VOLUME_MULTIPLIER` | `2.0` | Reserved strategy parameter; not currently used |
 | `STRATEGY_TRAILING_STOP_PERCENT` | `2.5` | Reserved strategy parameter; not currently used |
 | `STRATEGY_REVERSAL_CONFIRMATIONS` | `2` | Reserved strategy parameter; not currently used |
