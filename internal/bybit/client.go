@@ -129,7 +129,7 @@ type apiError struct {
 }
 
 func (e *apiError) Error() string {
-	return fmt.Sprintf("Bybit API error %d: %s", e.Code, e.Message)
+	return fmt.Sprintf("ошибка API Bybit %d: %s", e.Code, e.Message)
 }
 
 func NewClient(baseURL string) *Client {
