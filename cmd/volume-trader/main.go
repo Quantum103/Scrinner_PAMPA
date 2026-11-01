@@ -16,7 +16,7 @@ import (
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("Invalid configuration", "error", err)
+		slog.Error("Некорректная конфигурация", "ошибка", err)
 		os.Exit(1)
 	}
 
@@ -24,26 +24,32 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger.Info("Volume Trader started",
-		"mode", "paper",
-		"exchange", "Bybit",
-		"category", config.MarketCategory,
-		"position_side", "LONG_ONLY",
-		"virtual_deposit_usdt", cfg.Paper.InitialDepositUSDT,
-		"market_data_enabled", cfg.MarketData.Enabled,
+	logger.Info("Volume Trader запущен",
+		"режим", "виртуальная торговля",
+		"биржа", "Bybit",
+		"категория", config.MarketCategory,
+		"направление", "только LONG",
+		"виртуальный_депозит_USDT", cfg.Paper.InitialDepositUSDT,
+		"получение_рыночных_данных", cfg.MarketData.Enabled,
 	)
 
 	if !cfg.MarketData.Enabled {
-		logger.Info("Public market-data polling is disabled")
+		logger.Info("Получение рыночных данных отключено")
 		<-ctx.Done()
-		logger.Info("Volume Trader stopped")
+		logger.Info("Volume Trader остановлен")
 		return
 	}
 
 	client := bybit.NewClient(cfg.Bybit.RESTURL)
-	poller := market.NewPoller(client, cfg.MarketData.UpdateInterval, cfg.MarketData.MaxTrackedSymbols, logger)
+	poller := market.NewPoller(
+		client,
+		cfg.MarketData.UpdateInterval,
+		cfg.MarketData.InstrumentRefreshInterval,
+		cfg.MarketData.MaxTrackedSymbols,
+		logger,
+	)
 	poller.Run(ctx)
-	logger.Info("Volume Trader stopped")
+	logger.Info("Volume Trader остановлен")
 }
 
 func newLogger(level string) *slog.Logger {
