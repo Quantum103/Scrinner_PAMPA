@@ -184,6 +184,7 @@ func TestFundingIsAppliedWhenPositionCrossesFundingTime(t *testing.T) {
 	}}, markAt)
 	book := testBook(fundingAt)
 	book.Bids = []Level{{Price: 100, Quantity: 100}}
+	book.Asks = []Level{{Price: 100.1, Quantity: 100}}
 	engine.UpdateBook("TESTUSDT", book, fundingAt)
 
 	events := engine.DrainEvents()
@@ -236,6 +237,7 @@ func TestNegativeFundingRateCreditsLongPosition(t *testing.T) {
 	}}, markAt)
 	book := testBook(fundingAt)
 	book.Bids = []Level{{Price: 100, Quantity: 100}}
+	book.Asks = []Level{{Price: 100.1, Quantity: 100}}
 	engine.UpdateBook("TESTUSDT", book, fundingAt)
 	account := engine.Snapshot(fundingAt)
 	if account.NetFunding <= 0 {
@@ -420,6 +422,7 @@ func TestFundingIsSkippedWhenPublicMarkPriceIsStale(t *testing.T) {
 	fundingAt := now.Add(time.Minute)
 	book := testBook(fundingAt)
 	book.Bids = []Level{{Price: 100, Quantity: 100}}
+	book.Asks = []Level{{Price: 100.1, Quantity: 100}}
 	engine.UpdateBook("TESTUSDT", book, fundingAt)
 
 	if account := engine.Snapshot(fundingAt); account.NetFunding != 0 {

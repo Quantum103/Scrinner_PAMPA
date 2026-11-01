@@ -48,6 +48,7 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	t.Setenv("ANALYSIS_RVOL_LOOKBACK_INTERVALS", "12")
 	t.Setenv("ANALYSIS_CVD_WINDOW", "8m")
 	t.Setenv("ANALYSIS_MOMENTUM_WINDOWS", "10s,30s,2m")
+	t.Setenv("ENTRY_PRICE_CHANGE_WINDOW", "2m")
 	t.Setenv("ANALYSIS_ABSORPTION_MIN_BUY_SHARE", "0.8")
 	t.Setenv("ANALYSIS_ORDERBOOK_LEVELS", "5")
 

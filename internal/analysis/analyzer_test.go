@@ -250,13 +250,13 @@ func TestFlowTradeCountAndLargestTradeConcentration(t *testing.T) {
 	addTrade(t, analyzer, now.Add(-time.Second), "Buy", 5, 100.01)
 
 	got := analyzer.Snapshot("BTCUSDT", now, true, freshBook(now))
-	if got.FlowTradeCount != 4 {
-		t.Fatalf("flow trade count = %d, want 4", got.FlowTradeCount)
+	if got.FlowTradeCount != 5 {
+		t.Fatalf("flow trade count = %d, want 5 (including the trade exactly on the inclusive window boundary)", got.FlowTradeCount)
 	}
 	if got.LargestTradeSharePercent == nil {
 		t.Fatal("largest trade concentration is missing")
 	}
-	want := 10.0 / 18.0 * 100
+	want := 10.0 / 28.0 * 100
 	if math.Abs(*got.LargestTradeSharePercent-want) > 0.000001 {
 		t.Fatalf("largest trade share = %.6f, want %.6f", *got.LargestTradeSharePercent, want)
 	}
