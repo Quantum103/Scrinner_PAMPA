@@ -14,20 +14,26 @@ const (
 	maxInstrumentRetry     = time.Minute
 )
 
+type SymbolSubscriber interface {
+	SetSymbols(symbols []string)
+}
+
 type Poller struct {
 	client                    *bybit.Client
 	interval                  time.Duration
 	instrumentRefreshInterval time.Duration
 	maxSymbols                int
+	subscriber                SymbolSubscriber
 	logger                    *slog.Logger
 }
 
-func NewPoller(client *bybit.Client, interval, instrumentRefreshInterval time.Duration, maxSymbols int, logger *slog.Logger) *Poller {
+func NewPoller(client *bybit.Client, interval, instrumentRefreshInterval time.Duration, maxSymbols int, subscriber SymbolSubscriber, logger *slog.Logger) *Poller {
 	return &Poller{
 		client:                    client,
 		interval:                  interval,
 		instrumentRefreshInterval: instrumentRefreshInterval,
 		maxSymbols:                maxSymbols,
+		subscriber:                subscriber,
 		logger:                    logger,
 	}
 }
@@ -69,6 +75,13 @@ func (p *Poller) Run(ctx context.Context) {
 				updated = updated[:p.maxSymbols]
 			}
 			instruments = updated
+			if p.subscriber != nil {
+				symbols := make([]string, 0, len(instruments))
+				for _, instrument := range instruments {
+					symbols = append(symbols, instrument.Symbol)
+				}
+				p.subscriber.SetSymbols(symbols)
+			}
 			retryDelay = initialInstrumentRetry
 			p.logger.Info("Список контрактов Bybit обновлён",
 				"контрактов_доступно", available,

@@ -141,6 +141,7 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
+// FetchUSDTPerpetualInstruments получает все активные USDT-линейные бессрочные контракты и их спецификации.
 func (c *Client) FetchUSDTPerpetualInstruments(ctx context.Context) ([]Instrument, error) {
 	query := url.Values{
 		"category": {"linear"},
@@ -194,6 +195,7 @@ func (c *Client) FetchUSDTPerpetualInstruments(ctx context.Context) ([]Instrumen
 	return instruments, nil
 }
 
+// FetchLinearTickers получает публичные рыночные тикеры линейного рынка Bybit.
 func (c *Client) FetchLinearTickers(ctx context.Context) ([]Ticker, error) {
 	query := url.Values{"category": {"linear"}}
 	var payload tickerResponse
@@ -227,6 +229,7 @@ func (c *Client) FetchLinearTickers(ctx context.Context) ([]Ticker, error) {
 	return tickers, nil
 }
 
+// FetchMarketData объединяет тикеры с заранее полученными спецификациями контрактов по символу.
 func (c *Client) FetchMarketData(ctx context.Context, instruments []Instrument) ([]MarketData, error) {
 	tickers, err := c.FetchLinearTickers(ctx)
 	if err != nil {

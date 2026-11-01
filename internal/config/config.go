@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	marketanalysis "github.com/Quantum103/Scrinner_PAMPA/internal/analysis"
 )
 
 const MarketCategory = "linear"
@@ -15,6 +17,8 @@ type Config struct {
 	LogLevel   string
 	Bybit      BybitConfig
 	MarketData MarketDataConfig
+	WebSocket  WebSocketConfig
+	Analysis   marketanalysis.Config
 	Strategy   StrategyConfig
 	Paper      PaperConfig
 	Costs      CostsConfig
@@ -31,6 +35,15 @@ type MarketDataConfig struct {
 	UpdateInterval            time.Duration
 	InstrumentRefreshInterval time.Duration
 	MaxTrackedSymbols         int
+}
+
+type WebSocketConfig struct {
+	OrderbookDepth          int
+	MaxSymbolsPerConnection int
+	MaxArgsPerSubscribe     int
+	MaxDataAge              time.Duration
+	TradeBufferCapacity     int
+	SeenTradeIDCapacity     int
 }
 
 type StrategyConfig struct {
@@ -68,6 +81,15 @@ func Load() (Config, error) {
 			InstrumentRefreshInterval: 15 * time.Minute,
 			MaxTrackedSymbols:         100,
 		},
+		Analysis: marketanalysis.DefaultConfig(),
+		WebSocket: WebSocketConfig{
+			OrderbookDepth:          50,
+			MaxSymbolsPerConnection: 25,
+			MaxArgsPerSubscribe:     10,
+			MaxDataAge:              5 * time.Second,
+			TradeBufferCapacity:     4096,
+			SeenTradeIDCapacity:     4096,
+		},
 		Strategy: StrategyConfig{
 			VolumeMultiplier:      2,
 			TrailingStopPercent:   2.5,
@@ -95,7 +117,7 @@ func Load() (Config, error) {
 	if cfg.Bybit.PublicWSURL, err = stringValue("BYBIT_PUBLIC_WS_URL", cfg.Bybit.PublicWSURL); err != nil {
 		return Config{}, err
 	}
-if cfg.MarketData.Enabled, err = boolValue("MARKET_DATA_ENABLED", cfg.MarketData.Enabled); err != nil {
+	if cfg.MarketData.Enabled, err = boolValue("MARKET_DATA_ENABLED", cfg.MarketData.Enabled); err != nil {
 		return Config{}, err
 	}
 	if cfg.MarketData.UpdateInterval, err = durationValue("DATA_UPDATE_INTERVAL", cfg.MarketData.UpdateInterval); err != nil {
@@ -105,6 +127,54 @@ if cfg.MarketData.Enabled, err = boolValue("MARKET_DATA_ENABLED", cfg.MarketData
 		return Config{}, err
 	}
 	if cfg.MarketData.MaxTrackedSymbols, err = intValue("MAX_TRACKED_CONTRACTS", cfg.MarketData.MaxTrackedSymbols); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.OrderbookDepth, err = intValue("WS_ORDERBOOK_DEPTH", cfg.WebSocket.OrderbookDepth); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.MaxSymbolsPerConnection, err = intValue("WS_MAX_SYMBOLS_PER_CONNECTION", cfg.WebSocket.MaxSymbolsPerConnection); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.MaxArgsPerSubscribe, err = intValue("WS_MAX_ARGS_PER_SUBSCRIBE", cfg.WebSocket.MaxArgsPerSubscribe); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.MaxDataAge, err = durationValue("WS_MAX_DATA_AGE", cfg.WebSocket.MaxDataAge); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.TradeBufferCapacity, err = intValue("WS_TRADE_BUFFER_CAPACITY", cfg.WebSocket.TradeBufferCapacity); err != nil {
+		return Config{}, err
+	}
+	if cfg.WebSocket.SeenTradeIDCapacity, err = intValue("WS_SEEN_TRADE_ID_CAPACITY", cfg.WebSocket.SeenTradeIDCapacity); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.RVOLInterval, err = durationValue("ANALYSIS_RVOL_INTERVAL", cfg.Analysis.RVOLInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.RVOLLookbackIntervals, err = intValue("ANALYSIS_RVOL_LOOKBACK_INTERVALS", cfg.Analysis.RVOLLookbackIntervals); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.FlowWindow, err = durationValue("ANALYSIS_FLOW_WINDOW", cfg.Analysis.FlowWindow); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.CVDWindow, err = durationValue("ANALYSIS_CVD_WINDOW", cfg.Analysis.CVDWindow); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.MomentumWindows, err = durationListValue("ANALYSIS_MOMENTUM_WINDOWS", cfg.Analysis.MomentumWindows); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.VolumeAccelerationWindow, err = durationValue("ANALYSIS_VOLUME_ACCELERATION_WINDOW", cfg.Analysis.VolumeAccelerationWindow); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.AbsorptionMinBuyShare, err = floatValue("ANALYSIS_ABSORPTION_MIN_BUY_SHARE", cfg.Analysis.AbsorptionMinBuyShare); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.AbsorptionBuyVolumeMultiplier, err = floatValue("ANALYSIS_ABSORPTION_BUY_VOLUME_MULTIPLIER", cfg.Analysis.AbsorptionBuyVolumeMultiplier); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.AbsorptionMaxPriceChangePct, err = floatValue("ANALYSIS_ABSORPTION_MAX_PRICE_CHANGE_PERCENT", cfg.Analysis.AbsorptionMaxPriceChangePct); err != nil {
+		return Config{}, err
+	}
+	if cfg.Analysis.OrderBookLevels, err = intValue("ANALYSIS_ORDERBOOK_LEVELS", cfg.Analysis.OrderBookLevels); err != nil {
 		return Config{}, err
 	}
 	if cfg.Strategy.VolumeMultiplier, err = floatValue("STRATEGY_VOLUME_MULTIPLIER", cfg.Strategy.VolumeMultiplier); err != nil {
@@ -166,6 +236,24 @@ func (c Config) Validate() error {
 	}
 	if c.MarketData.MaxTrackedSymbols <= 0 {
 		return fmt.Errorf("MAX_TRACKED_CONTRACTS должен быть больше нуля")
+	}
+	if c.WebSocket.OrderbookDepth != 50 {
+		return fmt.Errorf("WS_ORDERBOOK_DEPTH должен быть равен 50 для выбранного потока стакана")
+	}
+	if c.WebSocket.MaxSymbolsPerConnection <= 0 || c.WebSocket.MaxSymbolsPerConnection > 25 {
+		return fmt.Errorf("WS_MAX_SYMBOLS_PER_CONNECTION должен быть в диапазоне от 1 до 25")
+	}
+	if c.WebSocket.MaxArgsPerSubscribe <= 0 || c.WebSocket.MaxArgsPerSubscribe > 10 {
+		return fmt.Errorf("WS_MAX_ARGS_PER_SUBSCRIBE должен быть в диапазоне от 1 до 10")
+	}
+	if c.WebSocket.MaxDataAge <= 0 {
+		return fmt.Errorf("WS_MAX_DATA_AGE должен быть больше нуля")
+	}
+	if c.WebSocket.TradeBufferCapacity <= 0 || c.WebSocket.SeenTradeIDCapacity <= 0 {
+		return fmt.Errorf("размеры буферов WebSocket должны быть больше нуля")
+	}
+	if err := c.Analysis.Validate(); err != nil {
+		return fmt.Errorf("ANALYSIS: %w", err)
 	}
 	if c.Strategy.VolumeMultiplier <= 0 {
 		return fmt.Errorf("STRATEGY_VOLUME_MULTIPLIER должен быть больше нуля")
@@ -236,6 +324,23 @@ func durationValue(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: ожидалась длительность, например 2s или 500ms: %w", key, err)
 	}
 	return parsed, nil
+}
+
+func durationListValue(key string, fallback []time.Duration) ([]time.Duration, error) {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return append([]time.Duration(nil), fallback...), nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]time.Duration, 0, len(parts))
+	for _, part := range parts {
+		parsed, err := time.ParseDuration(strings.TrimSpace(part))
+		if err != nil {
+			return nil, fmt.Errorf("%s: некорректный интервал %q: %w", key, part, err)
+		}
+		result = append(result, parsed)
+	}
+	return result, nil
 }
 
 func boolValue(key string, fallback bool) (bool, error) {

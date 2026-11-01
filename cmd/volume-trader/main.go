@@ -11,6 +11,7 @@ import (
 	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/config"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/market"
+	"github.com/Quantum103/Scrinner_PAMPA/internal/stream"
 )
 
 func main() {
@@ -41,14 +42,35 @@ func main() {
 	}
 
 	client := bybit.NewClient(cfg.Bybit.RESTURL)
+	wsConfig := stream.DefaultConfig(cfg.Bybit.PublicWSURL)
+	wsConfig.Depth = cfg.WebSocket.OrderbookDepth
+	wsConfig.MaxSymbolsPerConnection = cfg.WebSocket.MaxSymbolsPerConnection
+	wsConfig.MaxArgsPerSubscribe = cfg.WebSocket.MaxArgsPerSubscribe
+	wsConfig.MaxDataAge = cfg.WebSocket.MaxDataAge
+	wsConfig.TradeBufferCapacity = cfg.WebSocket.TradeBufferCapacity
+	wsConfig.SeenTradeIDCapacity = cfg.WebSocket.SeenTradeIDCapacity
+	wsConfig.Analysis = cfg.Analysis
+	wsManager, err := stream.NewManager(wsConfig, logger)
+	if err != nil {
+		logger.Error("Некорректная конфигурация WebSocket", "ошибка", err)
+		os.Exit(1)
+	}
+	wsDone := make(chan struct{})
+	go func() {
+		defer close(wsDone)
+		wsManager.Run(ctx)
+	}()
+
 	poller := market.NewPoller(
 		client,
 		cfg.MarketData.UpdateInterval,
 		cfg.MarketData.InstrumentRefreshInterval,
 		cfg.MarketData.MaxTrackedSymbols,
+		wsManager,
 		logger,
 	)
 	poller.Run(ctx)
+	<-wsDone
 	logger.Info("Volume Trader остановлен")
 }
 

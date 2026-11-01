@@ -1,0 +1,466 @@
+package stream
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	marketanalysis "github.com/Quantum103/Scrinner_PAMPA/internal/analysis"
+)
+
+const (
+	defaultDepth                      = 50
+	defaultSymbolsPerConnection       = 25
+	defaultArgsPerSubscribe           = 10
+	defaultHeartbeatInterval          = 20 * time.Second
+	defaultReadTimeout                = 60 * time.Second
+	defaultReconnectMin               = time.Second
+	defaultReconnectMax               = 30 * time.Second
+	subscriptionBatchPause            = 100 * time.Millisecond
+	maxWebSocketMessageSize     int64 = 1 << 20
+	webSocketCloseMessage             = 8
+)
+
+type Config struct {
+	URL                     string
+	Depth                   int
+	MaxSymbolsPerConnection int
+	MaxArgsPerSubscribe     int
+	HeartbeatInterval       time.Duration
+	ReadTimeout             time.Duration
+	MaxDataAge              time.Duration
+	ReconnectMin            time.Duration
+	ReconnectMax            time.Duration
+	TradeBufferCapacity     int
+	SeenTradeIDCapacity     int
+	Analysis                marketanalysis.Config
+}
+
+type wireConn interface {
+	ReadMessage() (messageType int, data []byte, err error)
+	WriteJSON(value any) error
+	SetReadDeadline(deadline time.Time) error
+	SetWriteDeadline(deadline time.Time) error
+	SetPongHandler(handler func(appData string) error)
+	SetReadLimit(limit int64)
+	WriteControl(messageType int, data []byte, deadline time.Time) error
+	Close() error
+}
+
+type connector interface {
+	Dial(ctx context.Context, url string) (wireConn, error)
+}
+
+type Manager struct {
+	cfg       Config
+	store     *Store
+	logger    *slog.Logger
+	connector connector
+
+	mu      sync.Mutex
+	symbols []string
+	updates chan struct{}
+}
+
+type wsEnvelope struct {
+	Operation string `json:"op"`
+	Success   *bool  `json:"success"`
+	Message   string `json:"ret_msg"`
+	Topic     string `json:"topic"`
+}
+
+type subscriptionBatch struct {
+	Operation string   `json:"op"`
+	Arguments []string `json:"args"`
+}
+
+func DefaultConfig(url string) Config {
+	return Config{
+		URL:                     url,
+		Depth:                   defaultDepth,
+		MaxSymbolsPerConnection: defaultSymbolsPerConnection,
+		MaxArgsPerSubscribe:     defaultArgsPerSubscribe,
+		HeartbeatInterval:       defaultHeartbeatInterval,
+		ReadTimeout:             defaultReadTimeout,
+		MaxDataAge:              5 * time.Second,
+		ReconnectMin:            defaultReconnectMin,
+		ReconnectMax:            defaultReconnectMax,
+		TradeBufferCapacity:     4096,
+		SeenTradeIDCapacity:     4096,
+		Analysis:                marketanalysis.DefaultConfig(),
+	}
+}
+
+func NewManager(cfg Config, logger *slog.Logger) (*Manager, error) {
+	if cfg.URL == "" || cfg.Depth != 50 || cfg.MaxSymbolsPerConnection <= 0 || cfg.MaxSymbolsPerConnection > 25 ||
+		cfg.MaxArgsPerSubscribe <= 0 || cfg.MaxArgsPerSubscribe > 10 || cfg.HeartbeatInterval <= 0 ||
+		cfg.ReadTimeout <= cfg.HeartbeatInterval || cfg.MaxDataAge <= 0 || cfg.ReconnectMin <= 0 ||
+		cfg.ReconnectMax < cfg.ReconnectMin || cfg.TradeBufferCapacity <= 0 || cfg.SeenTradeIDCapacity <= 0 {
+		return nil, errors.New("некорректные параметры публичного WebSocket Bybit")
+	}
+	store, err := NewStoreWithAnalysis(cfg.Depth, cfg.MaxDataAge, cfg.TradeBufferCapacity, cfg.SeenTradeIDCapacity, cfg.Analysis)
+	if err != nil {
+		return nil, err
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Manager{
+		cfg:       cfg,
+		store:     store,
+		logger:    logger,
+		connector: newGorillaConnector(),
+		updates:   make(chan struct{}, 1),
+	}, nil
+}
+
+func (m *Manager) Store() *Store {
+	return m.store
+}
+
+// SetSymbols объединяет частые обновления: важен только последний полный список инструментов.
+func (m *Manager) SetSymbols(symbols []string) {
+	normalized := normalizeSymbols(symbols)
+	m.mu.Lock()
+	if equalStrings(m.symbols, normalized) {
+		m.mu.Unlock()
+		return
+	}
+	m.symbols = normalized
+	m.mu.Unlock()
+	select {
+	case m.updates <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) Run(ctx context.Context) {
+	var shardCancel context.CancelFunc
+	var shardWG sync.WaitGroup
+
+	restart := func(symbols []string) {
+		if shardCancel != nil {
+			shardCancel()
+			shardWG.Wait()
+		}
+		m.store.MarkRemoved(symbols)
+		if len(symbols) == 0 {
+			m.logger.Info("Нет инструментов для WebSocket-подписок")
+			shardCancel = nil
+			return
+		}
+
+		shardCtx, cancel := context.WithCancel(ctx)
+		shardCancel = cancel
+		shards := splitSymbols(symbols, m.cfg.MaxSymbolsPerConnection)
+		m.logger.Info("Запуск публичных WebSocket-соединений Bybit",
+			"инструментов", len(symbols),
+			"соединений", len(shards),
+			"глубина_стакана", m.cfg.Depth,
+		)
+		for _, shard := range shards {
+			shard := append([]string(nil), shard...)
+			shardWG.Add(1)
+			go func() {
+				defer shardWG.Done()
+				m.runShard(shardCtx, shard)
+			}()
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			if shardCancel != nil {
+				shardCancel()
+				shardWG.Wait()
+			}
+			return
+		case <-m.updates:
+			m.mu.Lock()
+			symbols := append([]string(nil), m.symbols...)
+			m.mu.Unlock()
+			restart(symbols)
+		}
+	}
+}
+
+func (m *Manager) runShard(ctx context.Context, symbols []string) {
+	backoff := m.cfg.ReconnectMin
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		err := m.connectAndServe(ctx, symbols)
+		m.store.MarkDisconnected(symbols)
+		if ctx.Err() != nil {
+			return
+		}
+		m.logger.Warn("WebSocket Bybit отключён; выполняется переподключение",
+			"инструментов", len(symbols),
+			"ошибка", err,
+			"повтор_через", backoff,
+		)
+		if err := waitContext(ctx, backoff); err != nil {
+			return
+		}
+		backoff *= 2
+		if backoff > m.cfg.ReconnectMax {
+			backoff = m.cfg.ReconnectMax
+		}
+	}
+}
+
+func (m *Manager) connectAndServe(ctx context.Context, symbols []string) error {
+	conn, err := m.connector.Dial(ctx, m.cfg.URL)
+	if err != nil {
+		return fmt.Errorf("подключиться к Bybit: %w", err)
+	}
+	defer conn.Close()
+	conn.SetReadLimit(maxWebSocketMessageSize)
+	_ = conn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout))
+	})
+
+	for _, batch := range buildSubscriptionBatches(symbols, m.cfg.Depth, m.cfg.MaxArgsPerSubscribe) {
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if err := conn.WriteJSON(batch); err != nil {
+			return fmt.Errorf("отправить подписку Bybit: %w", err)
+		}
+		if err := waitContext(ctx, subscriptionBatchPause); err != nil {
+			return err
+		}
+	}
+	m.store.StartSession(symbols)
+	m.logger.Info("Публичный WebSocket Bybit подключён; подписки отправлены",
+		"инструментов", len(symbols),
+		"тем_подписки", len(symbols)*2,
+	)
+
+	sessionCtx, cancel := context.WithCancel(ctx)
+	heartbeatDone := make(chan struct{})
+	heartbeatErr := make(chan error, 1)
+	go m.heartbeat(sessionCtx, cancel, conn, heartbeatDone, heartbeatErr)
+	closeOnCancel := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-sessionCtx.Done():
+			_ = conn.WriteControl(webSocketCloseMessage, []byte{0x03, 0xE8}, time.Now().Add(time.Second))
+			_ = conn.Close()
+		case <-closeOnCancel:
+		}
+	}()
+
+	readErr := m.readLoop(sessionCtx, conn)
+	cancel()
+	close(closeOnCancel)
+	<-watcherDone
+	<-heartbeatDone
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	select {
+	case err := <-heartbeatErr:
+		return err
+	default:
+	}
+	if readErr == nil {
+		return errors.New("соединение WebSocket завершилось без причины")
+	}
+	return readErr
+}
+
+func (m *Manager) heartbeat(ctx context.Context, cancel context.CancelFunc, conn wireConn, done chan<- struct{}, errors chan<- error) {
+	defer close(done)
+	ticker := time.NewTicker(m.cfg.HeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if err := conn.WriteJSON(map[string]string{"op": "ping"}); err != nil {
+				m.logger.Warn("Не удалось отправить heartbeat Bybit", "ошибка", err)
+				select {
+				case errors <- err:
+				default:
+				}
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+func (m *Manager) readLoop(ctx context.Context, conn wireConn) error {
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			return fmt.Errorf("прочитать WebSocket-сообщение: %w", err)
+		}
+		if messageType != 1 {
+			return fmt.Errorf("получен неожиданный тип WebSocket-сообщения: %d", messageType)
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout)); err != nil {
+			return fmt.Errorf("обновить таймаут чтения WebSocket: %w", err)
+		}
+		if err := m.handleMessage(payload, time.Now()); err != nil {
+			return err
+		}
+	}
+}
+
+func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
+	var envelope wsEnvelope
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return fmt.Errorf("не удалось разобрать сообщение Bybit: %w", err)
+	}
+	if envelope.Operation == "pong" {
+		return nil
+	}
+	if envelope.Operation == "ping" {
+		return nil
+	}
+	if envelope.Operation == "subscribe" || envelope.Operation == "unsubscribe" {
+		if envelope.Success != nil && !*envelope.Success {
+			return fmt.Errorf("Bybit отклонила команду %s: %s", envelope.Operation, envelope.Message)
+		}
+		return nil
+	}
+	if envelope.Topic == "" {
+		return nil
+	}
+
+	switch {
+	case strings.HasPrefix(envelope.Topic, "orderbook."):
+		var message orderBookMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			return fmt.Errorf("разобрать стакан Bybit: %w", err)
+		}
+		if symbolFromTopic(envelope.Topic) != message.Data.Symbol {
+			return fmt.Errorf("символ в topic %q не совпадает с данными %q", envelope.Topic, message.Data.Symbol)
+		}
+		if err := m.store.ApplyOrderBook(payload, receivedAt); err != nil {
+			return fmt.Errorf("обновить стакан %s: %w", message.Data.Symbol, err)
+		}
+	case strings.HasPrefix(envelope.Topic, "publicTrade."):
+		var message tradeMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			return fmt.Errorf("разобрать сделки Bybit: %w", err)
+		}
+		for _, trade := range message.Data {
+			if symbolFromTopic(envelope.Topic) != trade.Symbol {
+				return fmt.Errorf("символ в topic %q не совпадает с данными %q", envelope.Topic, trade.Symbol)
+			}
+		}
+		if err := m.store.ApplyTrades(payload, receivedAt); err != nil {
+			return fmt.Errorf("сохранить сделки: %w", err)
+		}
+	}
+	return nil
+}
+
+func buildSubscriptionBatches(symbols []string, depth, batchSize int) []subscriptionBatch {
+	if depth <= 0 || batchSize <= 0 {
+		return nil
+	}
+	arguments := make([]string, 0, len(symbols)*2)
+	for _, symbol := range symbols {
+		arguments = append(arguments,
+			fmt.Sprintf("publicTrade.%s", symbol),
+			fmt.Sprintf("orderbook.%d.%s", depth, symbol),
+		)
+	}
+	batches := make([]subscriptionBatch, 0, (len(arguments)+batchSize-1)/batchSize)
+	for start := 0; start < len(arguments); start += batchSize {
+		end := start + batchSize
+		if end > len(arguments) {
+			end = len(arguments)
+		}
+		batches = append(batches, subscriptionBatch{
+			Operation: "subscribe",
+			Arguments: append([]string(nil), arguments[start:end]...),
+		})
+	}
+	return batches
+}
+
+func splitSymbols(symbols []string, maxPerConnection int) [][]string {
+	if maxPerConnection <= 0 {
+		return nil
+	}
+	var result [][]string
+	for start := 0; start < len(symbols); start += maxPerConnection {
+		end := start + maxPerConnection
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		result = append(result, append([]string(nil), symbols[start:end]...))
+	}
+	return result
+}
+
+func normalizeSymbols(symbols []string) []string {
+	seen := make(map[string]struct{}, len(symbols))
+	result := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		symbol = strings.ToUpper(strings.TrimSpace(symbol))
+		if !strings.HasSuffix(symbol, "USDT") || strings.ContainsAny(symbol, ". /\\\t\r\n") {
+			continue
+		}
+		if _, exists := seen[symbol]; exists {
+			continue
+		}
+		seen[symbol] = struct{}{}
+		result = append(result, symbol)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func symbolFromTopic(topic string) string {
+	parts := strings.Split(topic, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+func waitContext(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
