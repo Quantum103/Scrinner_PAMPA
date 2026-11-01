@@ -532,7 +532,7 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 	position.UnrealizedPnL = (bestBid - position.EntryPrice) * position.RemainingQuantity
 	position.UpdatedAt = now
 
-	if !position.StopTriggered {
+	if position.ExitReason == "" && !position.StopTriggered {
 		if bestBid > position.HighWaterPrice {
 			position.HighWaterPrice = bestBid
 			candidate := floorToStep(bestBid*(1-e.cfg.TrailingStopPercent/100), position.Contract.TickSize)
