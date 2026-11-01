@@ -7,40 +7,74 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	maxResponseBytes    = 8 << 20
-	instrumentPageLimit = 1000
+	maxResponseBytes       = 8 << 20
+	instrumentPageLimit    = 1000
+	maxRetries             = 4
+	initialRetryDelay      = 500 * time.Millisecond
+	maxLocalRetryDelay     = 8 * time.Second
+	minRequestInterval     = 200 * time.Millisecond
+	requestTimeout         = 10 * time.Second
+	bybitTooManyVisitsCode = 10006
 )
 
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+
+	rateMu        sync.Mutex
+	nextRequestAt time.Time
+}
+
+type Instrument struct {
+	Symbol           string
+	ContractType     string
+	Status           string
+	BaseCoin         string
+	QuoteCoin        string
+	SettleCoin       string
+	MinOrderQty      string
+	QtyStep          string
+	MinNotionalValue string
+	TickSize         string
+	MaxMktOrderQty   string
+	FundingInterval  int
 }
 
 type Ticker struct {
-	Symbol      string `json:"symbol"`
-	LastPrice   string `json:"lastPrice"`
-	Bid1Price   string `json:"bid1Price"`
-	Ask1Price   string `json:"ask1Price"`
-	Volume24h   string `json:"volume24h"`
-	Turnover24h string `json:"turnover24h"`
+	Symbol          string
+	LastPrice       string
+	BestBidPrice    string
+	BestAskPrice    string
+	Volume24h       string
+	Turnover24h     string
+	Price24hPcnt    string
+	FundingRate     string
+	NextFundingTime time.Time
 }
 
-type instrument struct {
-	Symbol       string `json:"symbol"`
-	ContractType string `json:"contractType"`
-	Status       string `json:"status"`
-	QuoteCoin    string `json:"quoteCoin"`
+type MarketData struct {
+	Instrument Instrument
+	Ticker     Ticker
 }
 
 type apiResponse struct {
 	RetCode int    `json:"retCode"`
 	RetMsg  string `json:"retMsg"`
+}
+
+type apiErrorProvider interface {
+	apiError() (int, string)
+}
+
+func (r apiResponse) apiError() (int, string) {
+	return r.RetCode, r.RetMsg
 }
 
 type instrumentsResponse struct {
@@ -51,72 +85,99 @@ type instrumentsResponse struct {
 	} `json:"result"`
 }
 
+type instrument struct {
+	Symbol       string `json:"symbol"`
+	ContractType string `json:"contractType"`
+	Status       string `json:"status"`
+	BaseCoin     string `json:"baseCoin"`
+	QuoteCoin    string `json:"quoteCoin"`
+	SettleCoin   string `json:"settleCoin"`
+	PriceFilter  struct {
+		TickSize string `json:"tickSize"`
+	} `json:"priceFilter"`
+	LotSizeFilter struct {
+		MinOrderQty      string `json:"minOrderQty"`
+		QtyStep          string `json:"qtyStep"`
+		MinNotionalValue string `json:"minNotionalValue"`
+		MaxMktOrderQty   string `json:"maxMktOrderQty"`
+	} `json:"lotSizeFilter"`
+	FundingInterval int `json:"fundingInterval"`
+}
+
 type tickerResponse struct {
 	apiResponse
 	Result struct {
-		List []Ticker `json:"list"`
+		List []rawTicker `json:"list"`
 	} `json:"result"`
+}
+
+type rawTicker struct {
+	Symbol          string `json:"symbol"`
+	LastPrice       string `json:"lastPrice"`
+	Bid1Price       string `json:"bid1Price"`
+	Ask1Price       string `json:"ask1Price"`
+	Volume24h       string `json:"volume24h"`
+	Turnover24h     string `json:"turnover24h"`
+	Price24hPcnt    string `json:"price24hPcnt"`
+	FundingRate     string `json:"fundingRate"`
+	NextFundingTime string `json:"nextFundingTime"`
+}
+
+type apiError struct {
+	Code    int
+	Message string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("Bybit API error %d: %s", e.Code, e.Message)
 }
 
 func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: requestTimeout,
 		},
 	}
 }
 
-// FetchUSDTPerpetualTickers returns live tickers for active USDT-settled perpetual contracts.
-func (c *Client) FetchUSDTPerpetualTickers(ctx context.Context) ([]Ticker, error) {
-	symbols, err := c.fetchUSDTPerpetualSymbols(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var payload tickerResponse
-	if err := c.get(ctx, "/v5/market/tickers", url.Values{"category": {"linear"}}, &payload); err != nil {
-		return nil, err
-	}
-	if payload.RetCode != 0 {
-		return nil, fmt.Errorf("Bybit public ticker API error %d: %s", payload.RetCode, payload.RetMsg)
-	}
-
-	tickers := make([]Ticker, 0, len(symbols))
-	for _, ticker := range payload.Result.List {
-		if _, ok := symbols[ticker.Symbol]; ok {
-			tickers = append(tickers, ticker)
-		}
-	}
-	sort.Slice(tickers, func(i, j int) bool {
-		return tickers[i].Symbol < tickers[j].Symbol
-	})
-	return tickers, nil
-}
-
-func (c *Client) fetchUSDTPerpetualSymbols(ctx context.Context) (map[string]struct{}, error) {
+func (c *Client) FetchUSDTPerpetualInstruments(ctx context.Context) ([]Instrument, error) {
 	query := url.Values{
 		"category": {"linear"},
-		"limit":    {fmt.Sprint(instrumentPageLimit)},
+		"status":   {"Trading"},
+		"limit":    {strconv.Itoa(instrumentPageLimit)},
 	}
-	symbols := make(map[string]struct{})
 	seenCursors := make(map[string]struct{})
+	instruments := make([]Instrument, 0)
 
-	for page := 0; ; page++ {
-		if page >= 20 {
-			return nil, fmt.Errorf("Bybit instruments-info pagination exceeded 20 pages")
-		}
+	for {
 		var payload instrumentsResponse
 		if err := c.get(ctx, "/v5/market/instruments-info", query, &payload); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("получить спецификации контрактов: %w", err)
 		}
-		if payload.RetCode != 0 {
-			return nil, fmt.Errorf("Bybit instruments-info API error %d: %s", payload.RetCode, payload.RetMsg)
-		}
+
 		for _, item := range payload.Result.List {
-			if item.ContractType == "LinearPerpetual" && item.QuoteCoin == "USDT" && item.Status == "Trading" {
-				symbols[item.Symbol] = struct{}{}
+			if item.ContractType != "LinearPerpetual" ||
+				item.Status != "Trading" ||
+				item.QuoteCoin != "USDT" ||
+				item.SettleCoin != "USDT" {
+				continue
 			}
+
+			instruments = append(instruments, Instrument{
+				Symbol:           item.Symbol,
+				ContractType:     item.ContractType,
+				Status:           item.Status,
+				BaseCoin:         item.BaseCoin,
+				QuoteCoin:        item.QuoteCoin,
+				SettleCoin:       item.SettleCoin,
+				MinOrderQty:      item.LotSizeFilter.MinOrderQty,
+				QtyStep:          item.LotSizeFilter.QtyStep,
+				MinNotionalValue: item.LotSizeFilter.MinNotionalValue,
+				TickSize:         item.PriceFilter.TickSize,
+				MaxMktOrderQty:   item.LotSizeFilter.MaxMktOrderQty,
+				FundingInterval:  item.FundingInterval,
+			})
 		}
 
 		cursor := payload.Result.NextPageCursor
@@ -124,40 +185,229 @@ func (c *Client) fetchUSDTPerpetualSymbols(ctx context.Context) (map[string]stru
 			break
 		}
 		if _, exists := seenCursors[cursor]; exists {
-			return nil, fmt.Errorf("Bybit instruments-info returned a repeated pagination cursor")
+			return nil, fmt.Errorf("Bybit вернула повторяющийся nextPageCursor: %q", cursor)
 		}
 		seenCursors[cursor] = struct{}{}
 		query.Set("cursor", cursor)
 	}
-	return symbols, nil
+
+	return instruments, nil
+}
+
+func (c *Client) FetchLinearTickers(ctx context.Context) ([]Ticker, error) {
+	query := url.Values{"category": {"linear"}}
+	var payload tickerResponse
+	if err := c.get(ctx, "/v5/market/tickers", query, &payload); err != nil {
+		return nil, fmt.Errorf("получить рыночные тикеры: %w", err)
+	}
+
+	tickers := make([]Ticker, 0, len(payload.Result.List))
+	for _, item := range payload.Result.List {
+		nextFundingTime := time.Time{}
+		if item.NextFundingTime != "" && item.NextFundingTime != "0" {
+			timestamp, err := strconv.ParseInt(item.NextFundingTime, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("тикер %s: некорректный nextFundingTime %q: %w", item.Symbol, item.NextFundingTime, err)
+			}
+			nextFundingTime = time.UnixMilli(timestamp).UTC()
+		}
+
+		tickers = append(tickers, Ticker{
+			Symbol:          item.Symbol,
+			LastPrice:       item.LastPrice,
+			BestBidPrice:    item.Bid1Price,
+			BestAskPrice:    item.Ask1Price,
+			Volume24h:       item.Volume24h,
+			Turnover24h:     item.Turnover24h,
+			Price24hPcnt:    item.Price24hPcnt,
+			FundingRate:     item.FundingRate,
+			NextFundingTime: nextFundingTime,
+		})
+	}
+	return tickers, nil
+}
+
+func (c *Client) FetchMarketData(ctx context.Context, instruments []Instrument) ([]MarketData, error) {
+	tickers, err := c.FetchLinearTickers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	tickersBySymbol := make(map[string]Ticker, len(tickers))
+	for _, ticker := range tickers {
+		tickersBySymbol[ticker.Symbol] = ticker
+	}
+
+	result := make([]MarketData, 0, len(instruments))
+	for _, item := range instruments {
+		ticker, exists := tickersBySymbol[item.Symbol]
+		if !exists {
+			continue
+		}
+		result = append(result, MarketData{
+			Instrument: item,
+			Ticker:     ticker,
+		})
+	}
+	return result, nil
 }
 
 func (c *Client) get(ctx context.Context, path string, query url.Values, target any) error {
 	endpoint, err := url.Parse(c.baseURL + path)
 	if err != nil {
-		return fmt.Errorf("build Bybit request URL: %w", err)
+		return fmt.Errorf("сформировать URL Bybit: %w", err)
 	}
 	endpoint.RawQuery = query.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-	if err != nil {
-		return fmt.Errorf("create Bybit public request: %w", err)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request Bybit public API: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := c.waitForRequest(ctx); err != nil {
+			return err
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Bybit public API returned HTTP %s", resp.Status)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			return fmt.Errorf("создать публичный запрос Bybit: %w", err)
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "volume-trader/1.0")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if attempt == maxRetries {
+				return fmt.Errorf("запрос Bybit: %w", err)
+			}
+			if err := waitContext(ctx, retryDelay(nil, attempt)); err != nil {
+				return err
+			}
+			continue
+		}
+
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+		headers := resp.Header.Clone()
+		statusCode := resp.StatusCode
+		resp.Body.Close()
+
+		if readErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if attempt == maxRetries {
+				return fmt.Errorf("прочитать ответ Bybit: %w", readErr)
+			}
+			if err := waitContext(ctx, retryDelay(headers, attempt)); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(body) > maxResponseBytes {
+			return fmt.Errorf("ответ Bybit превышает допустимый размер %d байт", maxResponseBytes)
+		}
+
+		if statusCode != http.StatusOK {
+			requestErr := fmt.Errorf("Bybit вернула HTTP %d: %s", statusCode, http.StatusText(statusCode))
+			if !isRetryableStatus(statusCode) || attempt == maxRetries {
+				return requestErr
+			}
+			if err := waitContext(ctx, retryDelay(headers, attempt)); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := json.Unmarshal(body, target); err != nil {
+			return fmt.Errorf("разобрать JSON-ответ Bybit: %w", err)
+		}
+		if provider, ok := target.(apiErrorProvider); ok {
+			code, message := provider.apiError()
+			if code != 0 {
+				requestErr := &apiError{Code: code, Message: message}
+				if !isRetryableAPIError(code) || attempt == maxRetries {
+					return requestErr
+				}
+				if err := waitContext(ctx, retryDelay(headers, attempt)); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return fmt.Errorf("read Bybit public API response: %w", err)
+
+	return fmt.Errorf("Bybit: превышено количество повторных попыток")
+}
+
+func (c *Client) waitForRequest(ctx context.Context) error {
+	c.rateMu.Lock()
+	now := time.Now()
+	delay := time.Until(c.nextRequestAt)
+	if delay < 0 {
+		delay = 0
 	}
-	if err := json.Unmarshal(body, target); err != nil {
-		return fmt.Errorf("decode Bybit public API response: %w", err)
+	c.nextRequestAt = now.Add(delay).Add(minRequestInterval)
+	c.rateMu.Unlock()
+
+	return waitContext(ctx, delay)
+}
+
+func retryDelay(headers http.Header, attempt int) time.Duration {
+	delay := initialRetryDelay << attempt
+	if delay > maxLocalRetryDelay {
+		delay = maxLocalRetryDelay
 	}
-	return nil
+
+	if headers == nil {
+		return delay
+	}
+	if value := headers.Get("Retry-After"); value != "" {
+		if seconds, err := strconv.ParseFloat(value, 64); err == nil {
+			serverDelay := time.Duration(seconds * float64(time.Second))
+			if serverDelay > delay {
+				delay = serverDelay
+			}
+		} else if retryAt, err := http.ParseTime(value); err == nil {
+			if serverDelay := time.Until(retryAt); serverDelay > delay {
+				delay = serverDelay
+			}
+		}
+	}
+
+	if value := headers.Get("X-Bapi-Limit-Reset-Timestamp"); value != "" {
+		if timestamp, err := strconv.ParseInt(value, 10, 64); err == nil {
+			if serverDelay := time.Until(time.UnixMilli(timestamp)); serverDelay > delay {
+				delay = serverDelay
+			}
+		}
+	}
+	return delay
+}
+
+func isRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
+func isRetryableAPIError(code int) bool {
+	switch code {
+	case bybitTooManyVisitsCode, 10000, 10016, 429:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
