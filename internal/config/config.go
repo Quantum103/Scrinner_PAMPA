@@ -63,7 +63,17 @@ type PaperConfig struct {
 	MaxLeverage         float64
 	MaxMarginPercent    float64
 	MaxOpenPositions    int
-	TrailingStopPercent float64
+	TrailingStopPercent                float64
+	OrderFlowExitEnabled               bool
+	OrderFlowMinSignals                 int
+	OrderFlowConsecutiveIntervals       int
+	OrderFlowObservationInterval        time.Duration
+	OrderFlowMaxObservationGap          time.Duration
+	OrderFlowMaxTakerBuySharePercent    float64
+	OrderFlowTakerBuyShareDropPP        float64
+	OrderFlowMinTakerSellSharePercent   float64
+	OrderFlowCVDMinDeclinePercent       float64
+	OrderFlowPriceStallMaxRisePercent   float64
 }
 
 type CostsConfig struct {
@@ -112,7 +122,17 @@ func Load() (Config, error) {
 			MaxLeverage:         2,
 			MaxMarginPercent:    50,
 			MaxOpenPositions:    1,
-			TrailingStopPercent: 2.5,
+			TrailingStopPercent:                2.5,
+			OrderFlowExitEnabled:               true,
+			OrderFlowMinSignals:                 3,
+			OrderFlowConsecutiveIntervals:       2,
+			OrderFlowObservationInterval:        time.Second,
+			OrderFlowMaxObservationGap:          3 * time.Second,
+			OrderFlowMaxTakerBuySharePercent:    45,
+			OrderFlowTakerBuyShareDropPP:        10,
+			OrderFlowMinTakerSellSharePercent:   55,
+			OrderFlowCVDMinDeclinePercent:       0.5,
+			OrderFlowPriceStallMaxRisePercent:   0.02,
 		},
 		Costs: CostsConfig{
 			FeeRate:     0.00055,
@@ -278,6 +298,36 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Paper.TrailingStopPercent, err = floatValue("PAPER_TRAILING_STOP_PERCENT", cfg.Paper.TrailingStopPercent); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowExitEnabled, err = boolValue("PAPER_ORDER_FLOW_EXIT_ENABLED", cfg.Paper.OrderFlowExitEnabled); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowMinSignals, err = intValue("PAPER_ORDER_FLOW_MIN_SIGNALS", cfg.Paper.OrderFlowMinSignals); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowConsecutiveIntervals, err = intValue("PAPER_ORDER_FLOW_CONSECUTIVE_INTERVALS", cfg.Paper.OrderFlowConsecutiveIntervals); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowObservationInterval, err = durationValue("PAPER_ORDER_FLOW_OBSERVATION_INTERVAL", cfg.Paper.OrderFlowObservationInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowMaxObservationGap, err = durationValue("PAPER_ORDER_FLOW_MAX_OBSERVATION_GAP", cfg.Paper.OrderFlowMaxObservationGap); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowMaxTakerBuySharePercent, err = floatValue("PAPER_ORDER_FLOW_MAX_TAKER_BUY_SHARE_PERCENT", cfg.Paper.OrderFlowMaxTakerBuySharePercent); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowTakerBuyShareDropPP, err = floatValue("PAPER_ORDER_FLOW_TAKER_BUY_SHARE_DROP_PP", cfg.Paper.OrderFlowTakerBuyShareDropPP); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowMinTakerSellSharePercent, err = floatValue("PAPER_ORDER_FLOW_MIN_TAKER_SELL_SHARE_PERCENT", cfg.Paper.OrderFlowMinTakerSellSharePercent); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowCVDMinDeclinePercent, err = floatValue("PAPER_ORDER_FLOW_CVD_MIN_DECLINE_PERCENT", cfg.Paper.OrderFlowCVDMinDeclinePercent); err != nil {
+		return Config{}, err
+	}
+	if cfg.Paper.OrderFlowPriceStallMaxRisePercent, err = floatValue("PAPER_ORDER_FLOW_PRICE_STALL_MAX_RISE_PERCENT", cfg.Paper.OrderFlowPriceStallMaxRisePercent); err != nil {
 		return Config{}, err
 	}
 	if _, exists := os.LookupEnv("PAPER_MAX_OPEN_POSITIONS"); !exists {
@@ -492,6 +542,16 @@ func (c Config) PaperEngineConfig() marketpaper.Config {
 		MaxMarginPercent: c.Paper.MaxMarginPercent,
 		MaxOpenPositions: c.Paper.MaxOpenPositions,
 		TrailingStopPercent: c.Paper.TrailingStopPercent,
+		OrderFlowExitEnabled: c.Paper.OrderFlowExitEnabled,
+		OrderFlowMinSignals: c.Paper.OrderFlowMinSignals,
+		OrderFlowConsecutiveIntervals: c.Paper.OrderFlowConsecutiveIntervals,
+		OrderFlowObservationInterval: c.Paper.OrderFlowObservationInterval,
+		OrderFlowMaxObservationGap: c.Paper.OrderFlowMaxObservationGap,
+		OrderFlowMaxTakerBuySharePercent: c.Paper.OrderFlowMaxTakerBuySharePercent,
+		OrderFlowTakerBuyShareDropPP: c.Paper.OrderFlowTakerBuyShareDropPP,
+		OrderFlowMinTakerSellSharePercent: c.Paper.OrderFlowMinTakerSellSharePercent,
+		OrderFlowCVDMinDeclinePercent: c.Paper.OrderFlowCVDMinDeclinePercent,
+		OrderFlowPriceStallMaxRisePercent: c.Paper.OrderFlowPriceStallMaxRisePercent,
 		FeeRate: c.Costs.FeeRate,
 		SlippageBPS: c.Costs.SlippageBPS,
 		MaxBookAge: c.WebSocket.MaxDataAge,

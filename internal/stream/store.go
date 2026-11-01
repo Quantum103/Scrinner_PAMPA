@@ -321,19 +321,24 @@ func (s *symbolState) rememberTradeID(id string, capacity int) {
 }
 
 // evaluateStrategy вызывается после каждого принятого обновления стакана или пачки сделок.
-// Стратегия получает только полностью готовый анализатором и актуальный срез рынка.
+// Position Manager получает каждый свежий срез; поиск новых входов остаётся ограничен
+// своим интервалом наблюдения и использует только готовые данные.
 func (s *Store) evaluateStrategy(symbol string, now time.Time) {
 	state := s.states[symbol]
 	if state == nil {
 		return
 	}
+
+	bookSnapshot := state.book.snapshot(symbol)
+	bookSnapshot.Fresh = withinAge(now, state.book.receivedAt, s.maxDataAge)
+	analysisSnapshot := s.analyzer.Snapshot(symbol, now, state.connected, analysisBook(bookSnapshot))
+	s.paper.UpdateOrderFlow(symbol, analysisSnapshot, paperBook(bookSnapshot, bookSnapshot.Fresh), now)
+
 	if !state.lastStrategyEvaluationAt.IsZero() && now.Sub(state.lastStrategyEvaluationAt) < s.strategyInterval {
 		return
 	}
 	state.lastStrategyEvaluationAt = now
-	bookSnapshot := state.book.snapshot(symbol)
-	bookSnapshot.Fresh = withinAge(now, state.book.receivedAt, s.maxDataAge)
-	analysisSnapshot := s.analyzer.Snapshot(symbol, now, state.connected, analysisBook(bookSnapshot))
+
 	usable := state.connected && state.book.valid && bookSnapshot.Fresh &&
 		state.hasTrade && withinAge(now, state.lastTradeAt, s.maxDataAge) &&
 		withinAge(now, state.lastTrade.TradeTime, s.maxDataAge) && !state.tradeGap

@@ -26,7 +26,17 @@ type Config struct {
 	TrailingStopPercent float64
 	FeeRate             float64
 	SlippageBPS         float64
-	MaxBookAge          time.Duration
+	MaxBookAge                       time.Duration
+	OrderFlowExitEnabled              bool
+	OrderFlowMinSignals                int
+	OrderFlowConsecutiveIntervals      int
+	OrderFlowObservationInterval       time.Duration
+	OrderFlowMaxObservationGap         time.Duration
+	OrderFlowMaxTakerBuySharePercent   float64
+	OrderFlowTakerBuyShareDropPP       float64
+	OrderFlowMinTakerSellSharePercent  float64
+	OrderFlowCVDMinDeclinePercent      float64
+	OrderFlowPriceStallMaxRisePercent  float64
 }
 
 func DefaultConfig() Config {
@@ -41,7 +51,17 @@ func DefaultConfig() Config {
 		TrailingStopPercent: 2.5,
 		FeeRate:             0.00055, // Расчётное допущение, не ставка конкретного аккаунта Bybit.
 		SlippageBPS:         5,
-		MaxBookAge:          5 * time.Second,
+		MaxBookAge:                       5 * time.Second,
+		OrderFlowExitEnabled:              true,
+		OrderFlowMinSignals:                3,
+		OrderFlowConsecutiveIntervals:      2,
+		OrderFlowObservationInterval:       time.Second,
+		OrderFlowMaxObservationGap:         3 * time.Second,
+		OrderFlowMaxTakerBuySharePercent:   45,
+		OrderFlowTakerBuyShareDropPP:       10,
+		OrderFlowMinTakerSellSharePercent:  55,
+		OrderFlowCVDMinDeclinePercent:      0.5,
+		OrderFlowPriceStallMaxRisePercent:  0.02,
 	}
 }
 
@@ -75,6 +95,30 @@ func (c Config) Validate() error {
 	}
 	if c.MaxBookAge <= 0 {
 		return errors.New("максимальный возраст стакана должен быть положительным")
+	}
+	if c.OrderFlowMinSignals < 1 || c.OrderFlowMinSignals > 4 {
+		return errors.New("для Order Flow Exit требуется от 1 до 4 групп сигналов")
+	}
+	if c.OrderFlowConsecutiveIntervals < 1 || c.OrderFlowConsecutiveIntervals > 20 {
+		return errors.New("число последовательных интервалов Order Flow должно быть в диапазоне 1..20")
+	}
+	if c.OrderFlowObservationInterval <= 0 || c.OrderFlowMaxObservationGap < c.OrderFlowObservationInterval {
+		return errors.New("интервалы наблюдения Order Flow должны быть положительными, а максимальный разрыв не меньше интервала")
+	}
+	if !finite(c.OrderFlowMaxTakerBuySharePercent) || c.OrderFlowMaxTakerBuySharePercent < 0 || c.OrderFlowMaxTakerBuySharePercent > 100 {
+		return errors.New("максимальная доля Taker Buy должна быть в диапазоне 0..100%")
+	}
+	if !finite(c.OrderFlowTakerBuyShareDropPP) || c.OrderFlowTakerBuyShareDropPP < 0 || c.OrderFlowTakerBuyShareDropPP > 100 {
+		return errors.New("снижение доли Taker Buy должно быть в диапазоне 0..100 процентных пунктов")
+	}
+	if !finite(c.OrderFlowMinTakerSellSharePercent) || c.OrderFlowMinTakerSellSharePercent < 50 || c.OrderFlowMinTakerSellSharePercent > 100 {
+		return errors.New("минимальная доля Taker Sell должна быть в диапазоне 50..100%")
+	}
+	if !finite(c.OrderFlowCVDMinDeclinePercent) || c.OrderFlowCVDMinDeclinePercent < 0 || c.OrderFlowCVDMinDeclinePercent > 100 {
+		return errors.New("минимальное снижение CVD должно быть в диапазоне 0..100%")
+	}
+	if !finite(c.OrderFlowPriceStallMaxRisePercent) || c.OrderFlowPriceStallMaxRisePercent < 0 || c.OrderFlowPriceStallMaxRisePercent > 5 {
+		return errors.New("допуск остановки цены должен быть в диапазоне 0..5%")
 	}
 	return nil
 }
@@ -141,7 +185,16 @@ type Position struct {
 	NextFundingTime    time.Time
 	FundingRate        float64
 	FundingInterval    time.Duration
-	Contract           Contract
+	Contract                     Contract
+	PreviousTakerBuySharePercent float64
+	PreviousCVD                  float64
+	PreviousLastPrice            float64
+	HasOrderFlowObservation      bool
+	LastOrderFlowObservationAt   time.Time
+	OrderFlowConfirmations       int
+	LastOrderFlowSignalCount     int
+	OrderFlowExitTriggered      bool
+	ExitReason                   string
 }
 
 type Event struct {
@@ -163,6 +216,8 @@ type Event struct {
 	GrossPnL          float64
 	NetPnL            float64
 	RemainingQuantity float64
+	FlowSignalCount   int
+	FlowConfirmations int
 }
 
 type AccountSnapshot struct {
@@ -477,7 +532,7 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 	position.UnrealizedPnL = (bestBid - position.EntryPrice) * position.RemainingQuantity
 	position.UpdatedAt = now
 
-	if !position.StopTriggered {
+	if position.ExitReason == "" && !position.StopTriggered {
 		if bestBid > position.HighWaterPrice {
 			position.HighWaterPrice = bestBid
 			candidate := floorToStep(bestBid*(1-e.cfg.TrailingStopPercent/100), position.Contract.TickSize)
@@ -487,10 +542,13 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 		}
 		if bestBid <= position.StopPrice {
 			position.StopTriggered = true
+			position.ExitReason = "сработал виртуальный Trailing Stop"
 		}
 	}
-	if position.StopTriggered {
-		e.closeLocked(position, book, now, "сработал виртуальный Trailing Stop")
+	// После частичного исполнения любой причины выхода продолжаем закрывать остаток
+	// по последующим актуальным Bid, не теряя первоначальную причину.
+	if position.ExitReason != "" {
+		e.closeLocked(position, book, now, position.ExitReason)
 	}
 	e.updatedAt = now
 	return nil
