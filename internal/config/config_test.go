@@ -194,7 +194,16 @@ func TestPaperTradingDefaultsAndEnvironmentOverrides(t *testing.T) {
 	if !cfg.Paper.Enabled || cfg.Paper.InitialDepositUSDT != 10 ||
 		cfg.Paper.TargetRiskPercent != 2.5 || cfg.Paper.MaxRiskPercent != 3 ||
 		cfg.Paper.MaxLeverage != 2 || cfg.Paper.MaxMarginPercent != 50 ||
-		cfg.Paper.MaxOpenPositions != 1 || cfg.Paper.TrailingStopPercent != 2.5 {
+		cfg.Paper.MaxOpenPositions != 1 || cfg.Paper.TrailingStopPercent != 2.5 ||
+		!cfg.Paper.OrderFlowExitEnabled || cfg.Paper.OrderFlowMinSignals != 3 ||
+		cfg.Paper.OrderFlowConsecutiveIntervals != 2 ||
+		cfg.Paper.OrderFlowObservationInterval != time.Second ||
+		cfg.Paper.OrderFlowMaxObservationGap != 3*time.Second ||
+		cfg.Paper.OrderFlowMaxTakerBuySharePercent != 45 ||
+		cfg.Paper.OrderFlowTakerBuyShareDropPP != 10 ||
+		cfg.Paper.OrderFlowMinTakerSellSharePercent != 55 ||
+		cfg.Paper.OrderFlowCVDMinDeclinePercent != 0.5 ||
+		cfg.Paper.OrderFlowPriceStallMaxRisePercent != 0.02 {
 		t.Fatalf("unexpected Paper Trading defaults: %+v", cfg.Paper)
 	}
 
@@ -206,6 +215,16 @@ func TestPaperTradingDefaultsAndEnvironmentOverrides(t *testing.T) {
 	t.Setenv("PAPER_MAX_MARGIN_PERCENT", "40")
 	t.Setenv("PAPER_MAX_OPEN_POSITIONS", "1")
 	t.Setenv("PAPER_TRAILING_STOP_PERCENT", "3")
+	t.Setenv("PAPER_ORDER_FLOW_EXIT_ENABLED", "false")
+	t.Setenv("PAPER_ORDER_FLOW_MIN_SIGNALS", "4")
+	t.Setenv("PAPER_ORDER_FLOW_CONSECUTIVE_INTERVALS", "3")
+	t.Setenv("PAPER_ORDER_FLOW_OBSERVATION_INTERVAL", "2s")
+	t.Setenv("PAPER_ORDER_FLOW_MAX_OBSERVATION_GAP", "5s")
+	t.Setenv("PAPER_ORDER_FLOW_MAX_TAKER_BUY_SHARE_PERCENT", "42")
+	t.Setenv("PAPER_ORDER_FLOW_TAKER_BUY_SHARE_DROP_PP", "12")
+	t.Setenv("PAPER_ORDER_FLOW_MIN_TAKER_SELL_SHARE_PERCENT", "58")
+	t.Setenv("PAPER_ORDER_FLOW_CVD_MIN_DECLINE_PERCENT", "0.8")
+	t.Setenv("PAPER_ORDER_FLOW_PRICE_STALL_MAX_RISE_PERCENT", "0.03")
 	t.Setenv("PAPER_FEE_RATE", "0.0007")
 	t.Setenv("PAPER_SLIPPAGE_BPS", "8")
 
@@ -216,8 +235,16 @@ func TestPaperTradingDefaultsAndEnvironmentOverrides(t *testing.T) {
 	if cfg.Paper.Enabled || cfg.Paper.InitialDepositUSDT != 25 ||
 		cfg.Paper.TargetRiskPercent != 2 || cfg.Paper.MaxRiskPercent != 2.8 ||
 		cfg.Paper.MaxLeverage != 1.5 || cfg.Paper.MaxMarginPercent != 40 ||
-		cfg.Paper.TrailingStopPercent != 3 || cfg.Costs.FeeRate != 0.0007 ||
-		cfg.Costs.SlippageBPS != 8 {
+		cfg.Paper.TrailingStopPercent != 3 || cfg.Paper.OrderFlowExitEnabled ||
+		cfg.Paper.OrderFlowMinSignals != 4 || cfg.Paper.OrderFlowConsecutiveIntervals != 3 ||
+		cfg.Paper.OrderFlowObservationInterval != 2*time.Second ||
+		cfg.Paper.OrderFlowMaxObservationGap != 5*time.Second ||
+		cfg.Paper.OrderFlowMaxTakerBuySharePercent != 42 ||
+		cfg.Paper.OrderFlowTakerBuyShareDropPP != 12 ||
+		cfg.Paper.OrderFlowMinTakerSellSharePercent != 58 ||
+		cfg.Paper.OrderFlowCVDMinDeclinePercent != 0.8 ||
+		cfg.Paper.OrderFlowPriceStallMaxRisePercent != 0.03 ||
+		cfg.Costs.FeeRate != 0.0007 || cfg.Costs.SlippageBPS != 8 {
 		t.Fatalf("Paper Trading overrides were not loaded: paper=%+v costs=%+v", cfg.Paper, cfg.Costs)
 	}
 }
@@ -240,5 +267,27 @@ func TestPaperTradingRejectsLeverageAndMarginAboveHardLimits(t *testing.T) {
 	cfg.Paper.MaxOpenPositions = 2
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error when more than one position is allowed")
+	}
+}
+
+
+func TestPaperOrderFlowExitRejectsInvalidThresholds(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg.Paper.OrderFlowMinSignals = 5
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when more than four Order Flow signal groups are required")
+	}
+	cfg.Paper.OrderFlowMinSignals = 3
+	cfg.Paper.OrderFlowMaxObservationGap = time.Millisecond
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when maximum observation gap is shorter than observation interval")
+	}
+	cfg.Paper.OrderFlowMaxObservationGap = 3 * time.Second
+	cfg.Paper.OrderFlowMinTakerSellSharePercent = 49
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when aggressive sell threshold is below 50%")
 	}
 }
