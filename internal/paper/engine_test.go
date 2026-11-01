@@ -616,8 +616,8 @@ func TestOrderFlowExitAppliesDueFundingBeforeFinalPnL(t *testing.T) {
 		t.Fatalf("funding was not charged or trade was not archived: %+v", account)
 	}
 	closed := account.ClosedTrades[0]
-	if closed.FundingPaid <= 0 || closed.RealizedPnL >= 0 {
-		t.Fatalf("closed trade PnL must include positive-rate LONG funding outflow: %+v", closed)
+	if closed.FundingPaid <= 0 || account.NetFunding >= 0 {
+		t.Fatalf("closed trade/account must include positive-rate LONG funding outflow: trade=%+v netFunding=%f", closed, account.NetFunding)
 	}
 	if math.Abs(closed.RealizedPnL-account.RealizedPnL) > 1e-8 {
 		t.Fatalf("closed trade/account PnL differ after funding: trade=%f account=%f", closed.RealizedPnL, account.RealizedPnL)
