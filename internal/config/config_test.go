@@ -8,9 +8,8 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("Load() вернула ошибку: %v", err)
 	}
-
 	if cfg.Bybit.RESTURL != "https://api.bybit.com" {
 		t.Errorf("RESTURL = %q", cfg.Bybit.RESTURL)
 	}
@@ -18,62 +17,76 @@ func TestLoadDefaults(t *testing.T) {
 		t.Errorf("PublicWSURL = %q", cfg.Bybit.PublicWSURL)
 	}
 	if cfg.MarketData.UpdateInterval != 2*time.Second {
-		t.Errorf("UpdateInterval = %s", cfg.MarketData.UpdateInterval)
+		t.Errorf("интервал обновления = %s", cfg.MarketData.UpdateInterval)
+	}
+	if cfg.MarketData.InstrumentRefreshInterval != 15*time.Minute {
+		t.Errorf("интервал обновления контрактов = %s", cfg.MarketData.InstrumentRefreshInterval)
 	}
 	if cfg.Paper.InitialDepositUSDT != 10 {
-		t.Errorf("InitialDepositUSDT = %v", cfg.Paper.InitialDepositUSDT)
+		t.Errorf("виртуальный депозит = %v", cfg.Paper.InitialDepositUSDT)
 	}
 	if MarketCategory != "linear" {
-		t.Errorf("MarketCategory = %q", MarketCategory)
+		t.Errorf("категория рынка = %q", MarketCategory)
 	}
 }
 
 func TestLoadEnvironmentOverrides(t *testing.T) {
 	t.Setenv("DATA_UPDATE_INTERVAL", "750ms")
+	t.Setenv("INSTRUMENT_REFRESH_INTERVAL", "5m")
 	t.Setenv("MAX_TRACKED_CONTRACTS", "25")
 	t.Setenv("VIRTUAL_DEPOSIT_USDT", "25.5")
 	t.Setenv("MARKET_DATA_ENABLED", "false")
 
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("Load() вернула ошибку: %v", err)
 	}
 	if cfg.MarketData.UpdateInterval != 750*time.Millisecond {
-		t.Errorf("UpdateInterval = %s", cfg.MarketData.UpdateInterval)
+		t.Errorf("интервал обновления = %s", cfg.MarketData.UpdateInterval)
+	}
+	if cfg.MarketData.InstrumentRefreshInterval != 5*time.Minute {
+		t.Errorf("интервал обновления контрактов = %s", cfg.MarketData.InstrumentRefreshInterval)
 	}
 	if cfg.MarketData.MaxTrackedSymbols != 25 {
-		t.Errorf("MaxTrackedSymbols = %d", cfg.MarketData.MaxTrackedSymbols)
+		t.Errorf("максимум контрактов = %d", cfg.MarketData.MaxTrackedSymbols)
 	}
 	if cfg.Paper.InitialDepositUSDT != 25.5 {
-		t.Errorf("InitialDepositUSDT = %v", cfg.Paper.InitialDepositUSDT)
+		t.Errorf("виртуальный депозит = %v", cfg.Paper.InitialDepositUSDT)
 	}
 	if cfg.MarketData.Enabled {
-		t.Error("MarketData.Enabled = true, want false")
+		t.Error("MARKET_DATA_ENABLED должен быть false")
 	}
 }
 
 func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 	t.Setenv("DATA_UPDATE_INTERVAL", "not-a-duration")
 	if _, err := Load(); err == nil {
-		t.Fatal("Load() error = nil, want an invalid duration error")
+		t.Fatal("ожидалась ошибка при некорректном интервале обновления")
 	}
 }
 
 func TestValidateRejectsNonPublicWebSocketScheme(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("Load() вернула ошибку: %v", err)
 	}
 	cfg.Bybit.PublicWSURL = "wss://stream.bybit.com/v5/public/linear"
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() rejected the public Linear URL: %v", err)
+		t.Fatalf("публичный WebSocket URL отклонён: %v", err)
 	}
 	cfg.Bybit.PublicWSURL = "wss://stream.bybit.com/v5/private"
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() error = nil, want a private stream URL to be rejected")
+		t.Fatal("закрытый WebSocket URL должен быть отклонён")
 	}
-	cfg.Bybit.PublicWSURL = "https://stream.bybit.com/v5/public/linear"
+}
+
+func TestValidateRejectsInvalidInstrumentRefreshInterval(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() вернула ошибку: %v", err)
+	}
+	cfg.MarketData.InstrumentRefreshInterval = 0
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() error = nil, want a WebSocket scheme error")
+		t.Fatal("интервал обновления списка контрактов должен быть больше нуля")
 	}
 }
