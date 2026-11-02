@@ -13,6 +13,7 @@ import (
 	"github.com/Quantum103/Scrinner_PAMPA/internal/market"
 	marketpaper "github.com/Quantum103/Scrinner_PAMPA/internal/paper"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/stream"
+	"github.com/Quantum103/Scrinner_PAMPA/internal/telegram"
 )
 
 func main() {
@@ -44,13 +45,6 @@ func main() {
 		"получение_рыночных_данных", cfg.MarketData.Enabled,
 	)
 
-	if !cfg.MarketData.Enabled {
-		logger.Info("Получение рыночных данных отключено")
-		<-ctx.Done()
-		logger.Info("Volume Trader остановлен")
-		return
-	}
-
 	client := bybit.NewClient(cfg.Bybit.RESTURL)
 	wsConfig := stream.DefaultConfig(cfg.Bybit.PublicWSURL)
 	wsConfig.Depth = cfg.WebSocket.OrderbookDepth
@@ -69,22 +63,52 @@ func main() {
 		logger.Error("Некорректная конфигурация WebSocket", "ошибка", err)
 		os.Exit(1)
 	}
+	var telegramDone chan struct{}
+	if cfg.Telegram.BotToken != "" {
+		bot, err := telegram.NewBot(telegram.Config{
+			Token: cfg.Telegram.BotToken,
+			AllowedUserIDs: cfg.Telegram.AllowedUserIDs,
+			DailyLossLimitPercent: cfg.Telegram.DailyLossLimitPercent,
+		}, wsManager, logger)
+		if err != nil {
+			logger.Error("Не удалось запустить конфигурацию Telegram", "ошибка", err)
+			os.Exit(1)
+		}
+		wsManager.SetObserver(bot)
+		telegramDone = make(chan struct{})
+		go func() {
+			defer close(telegramDone)
+			bot.Run(ctx)
+		}()
+		logger.Info("Telegram управление включено", "разрешённых_ID", len(cfg.Telegram.AllowedUserIDs))
+	} else {
+		logger.Warn("Telegram управление отключено: задай TELEGRAM_BOT_TOKEN и TELEGRAM_ALLOWED_USER_IDS")
+	}
+
 	wsDone := make(chan struct{})
 	go func() {
 		defer close(wsDone)
 		wsManager.Run(ctx)
 	}()
 
-	poller := market.NewPoller(
-		client,
-		cfg.MarketData.UpdateInterval,
-		cfg.MarketData.InstrumentRefreshInterval,
-		cfg.MarketData.MaxTrackedSymbols,
-		wsManager,
-		logger,
-	)
-	poller.Run(ctx)
+	if cfg.MarketData.Enabled {
+		poller := market.NewPoller(
+			client,
+			cfg.MarketData.UpdateInterval,
+			cfg.MarketData.InstrumentRefreshInterval,
+			cfg.MarketData.MaxTrackedSymbols,
+			wsManager,
+			logger,
+		)
+		poller.Run(ctx)
+	} else {
+		logger.Info("Получение рыночных данных отключено; Telegram управление доступно")
+		<-ctx.Done()
+	}
 	<-wsDone
+	if telegramDone != nil {
+		<-telegramDone
+	}
 	logger.Info("Volume Trader остановлен")
 }
 
