@@ -213,27 +213,44 @@ TELEGRAM_DAILY_LOSS_LIMIT_PERCENT=5
 
 Дневной лимит по умолчанию равен 5% equity на начало текущего UTC-дня; он настраивается `TELEGRAM_DAILY_LOSS_LIMIT_PERCENT`. Дневной PnL считается по изменению equity (реализованный и нереализованный результат). При достижении лимита новые входы автоматически блокируются до следующего UTC-дня. Уже открытая позиция не закрывается автоматически и продолжает сопровождаться. Ручная команда `/resume` не может снять блокировку дневного лимита. Если Telegram не настроен или выключен, бот и его дневной монитор не запускаются.
 
-## Запуск
+## Установка и запуск
 
-Требуется Go 1.23+.
+Требуется Go 1.23 или новее. SQLite использует CGO-драйвер: в Ubuntu/WSL установи C toolchain:
 
 ```sh
+sudo apt update
+sudo apt install -y build-essential
+```
+
+Клонируй репозиторий и подготовь конфигурацию:
+
+```sh
+git clone https://github.com/Quantum103/Scrinner_PAMPA.git
+cd Scrinner_PAMPA
 cp .env.example .env
-# Заполнить значения при необходимости. API-ключ Bybit не нужен.
+go mod download
+```
+
+Открой `.env`. Для рыночных данных достаточно публичных endpoint Bybit — API-ключи не нужны. Проверь `BYBIT_REST_URL`, `BYBIT_PUBLIC_WS_URL`, `MARKET_DATA_ENABLED=true` и параметры анализа/входов из разделов выше.
+
+Для Telegram создай бота через `@BotFather`, впиши выданный токен в `TELEGRAM_BOT_TOKEN` и один или несколько **числовых** Telegram user ID в `TELEGRAM_ALLOWED_USER_IDS` через запятую. Перед запуском открой личный чат с ботом и нажми Start. Если токен и allowlist пустые, приложение запускает Paper Trading без Telegram управления.
+
+Запуск:
+
+```sh
 go run ./cmd/volume-trader
 ```
 
-PowerShell:
+Для сборки исполняемого файла:
 
-```powershell
-Copy-Item .env.example .env
-Get-Content .env | ForEach-Object {
-    if ($_ -match '^\s*([^#][^=]*)=(.*)$') {
-        [Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim(), 'Process')
-    }
-}
-go run ./cmd/volume-trader
+```sh
+go build -o ./bin/volume-trader ./cmd/volume-trader
+./bin/volume-trader
 ```
+
+В PowerShell скопируй шаблон командой `Copy-Item .env.example .env`, внеси значения в `.env` и запусти `go run ./cmd/volume-trader`. Приложение читает переменные из окружения; если не используешь оболочку, которая загружает `.env` автоматически, экспортируй нужные пары KEY=VALUE перед запуском.
+
+SQLite-файл создаётся автоматически по `APP_DB_PATH`. Каталог `data` исключён из Git; не удаляй БД, если нужно сохранить Paper Trading account и историю сделок.
 
 ## Проверки
 
