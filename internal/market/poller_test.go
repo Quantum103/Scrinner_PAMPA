@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,6 +154,98 @@ func TestPollerPublishesFullMarketWithoutAlphabeticalTruncation(t *testing.T) {
 		t.Fatalf("funding исключённого инструмента не передан Paper Trading: %+v", paperSnapshot[0].Ticker)
 	}
 	if client.tickerCalls.Load() == 0 { t.Fatal("Poller не запросил полный снимок тикеров") }
+}
+
+
+func TestPollerSubscribesToBothRankingsAndPreservesOpenPositions(t *testing.T) {
+	instruments := []bybit.Instrument{
+		{Symbol: "BTCUSDT"},
+		{Symbol: "ETHUSDT"},
+		{Symbol: "AAAUSDT"},
+		{Symbol: "BBBUsdt"},
+		{Symbol: "CCCUSDT"},
+		{Symbol: "DDDUSDT"},
+		{Symbol: "EEEUSDT"},
+		{Symbol: "FFFUSDT"},
+		{Symbol: "GGGUSDT"},
+	}
+	tickers := make([]bybit.Ticker, 0, len(instruments))
+	for _, instrument := range instruments {
+		tickers = append(tickers, bybit.Ticker{Symbol: instrument.Symbol, LastPrice: "1"})
+	}
+	client := &fakeMarketRESTClient{instruments: instruments, tickers: tickers}
+	subscriber := &fakePollerSubscriber{
+		updated: make(chan struct{}, 1),
+		openPositions: []string{"BTCUSDT", "ACCEL01USDT"},
+	}
+	monitor := NewMonitor()
+	now := time.Now()
+	monitor.UpdateRanking(RankingSnapshot{
+		UpdatedAt: now,
+		Status: RankingStatusReady,
+		Candidates: []RankedSymbol{
+			{Rank: 1, Symbol: "AAAUSDT"},
+			{Rank: 2, Symbol: "BBBUsdt"},
+			{Rank: 3, Symbol: "DELISTEDUSDT"},
+		},
+		Accelerators: []RankedSymbol{
+			{Rank: 1, Symbol: "CCCUSDT"},
+			{Rank: 2, Symbol: "DDDUSDT"},
+			{Rank: 3, Symbol: "AAAUSDT"}, // Повтор между группами не создаёт подписку.
+		},
+	})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	poller := NewPoller(client, 10*time.Millisecond, time.Hour, []string{"BTCUSDT", "ETHUSDT"}, subscriber, monitor, nil, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); poller.Run(ctx) }()
+	select {
+	case <-subscriber.updated:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("Poller не передал рыночные данные")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Poller не остановился после отмены контекста")
+	}
+
+	symbols, _ := subscriber.snapshot()
+	seen := make(map[string]bool, len(symbols))
+	for _, symbol := range symbols {
+		seen[symbol] = true
+	}
+	for _, symbol := range []string{"AAAUSDT", "BBBUsdt", "CCCUSDT", "DDDUSDT", "BTCUSDT", "ACCEL01USDT"} {
+		if !seen[strings.ToUpper(symbol)] {
+			t.Errorf("отсутствует подробная подписка на %s; получили %v", symbol, symbols)
+		}
+	}
+	for _, symbol := range []string{"ETHUSDT", "EEEUSDT", "FFFUSDT", "GGGUSDT", "DELISTEDUSDT"} {
+		if seen[symbol] {
+			t.Errorf("неожиданная подробная подписка на %s; получили %v", symbol, symbols)
+		}
+	}
+	if len(symbols) != 6 {
+		t.Fatalf("подробных подписок = %d, want 6: %v", len(symbols), symbols)
+	}
+}
+
+func TestDetailedSubscriptionSelectionIgnoresStaleRanking(t *testing.T) {
+	now := time.Now()
+	instruments := []bybit.Instrument{{Symbol: "AAAUSDT"}}
+	ranking := RankingSnapshot{
+		UpdatedAt: now.Add(-6 * time.Second),
+		Status: RankingStatusReady,
+		Candidates: []RankedSymbol{{Symbol: "AAAUSDT"}},
+	}
+	selected := selectedRankedSymbols(instruments, ranking, now)
+	if len(selected) != 0 {
+		t.Fatalf("stale ranking returned symbols: %v", selected)
+	}
 }
 
 func TestMonitorReplacesSnapshotAndReturnsDefensiveCopy(t *testing.T) {

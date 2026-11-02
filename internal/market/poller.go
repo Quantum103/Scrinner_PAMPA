@@ -30,6 +30,10 @@ type KlineSymbolSubscriber interface {
 	SetSymbols(symbols []string)
 }
 
+type RankingSnapshotProvider interface {
+	Ranking() RankingSnapshot
+}
+
 type MarketDataIssueReporter interface {
 	ReportMarketDataIssue(message string)
 }
@@ -108,17 +112,14 @@ func (p *Poller) Run(ctx context.Context) {
 				}
 				p.klineSymbols.SetSymbols(symbols)
 			}
+			detailedSymbols := p.syncDetailedSubscriptions(monitorInstruments)
 			openPositions := p.openPositionSymbols()
-			// Подробный поток publicTrade/orderbook пока сохраняется только для открытых позиций.
-			// Полный подходящий рынок обслуживается отдельным Kline Manager.
-			if subscriber, ok := p.subscriber.(SymbolSubscriber); ok {
-				subscriber.SetSymbols(symbolsWithOpenPositions(nil, openPositions))
-			}
 			retryDelay = initialInstrumentRetry
 			p.logger.Info("Список контрактов Bybit обновлён",
 				"контрактов_доступно", len(instruments),
 				"исключено_из_мониторинга", len(instruments)-len(monitorInstruments),
 				"контрактов_в_мониторинге", len(monitorInstruments),
+				"подробных_подписок", len(detailedSymbols),
 				"открытых_позиций_в_подробном_наблюдении", len(openPositions),
 			)
 			resetTimer(instrumentTimer, p.instrumentRefreshInterval)
@@ -143,6 +144,7 @@ func (p *Poller) Run(ctx context.Context) {
 			if p.monitor != nil {
 				p.monitor.UpdateMarketSnapshot(monitorSnapshot, updatedAt)
 			}
+			detailedSymbols := p.syncDetailedSubscriptions(monitorInstruments)
 			// Paper Trading получает полный набор спецификаций/funding, включая исключённые монеты.
 			if subscriber, ok := p.subscriber.(MarketDataSubscriber); ok {
 				subscriber.UpdateMarketData(allSnapshot)
@@ -151,6 +153,9 @@ func (p *Poller) Run(ctx context.Context) {
 				"тикеров_linear", len(tickers),
 				"контрактов_со_спецификациями", len(allSnapshot),
 				"контрактов_в_мониторинге", len(monitorSnapshot),
+			)
+			p.logger.Debug("Подробные WebSocket-подписки синхронизированы",
+				"символов", len(detailedSymbols),
 			)
 			for _, item := range allSnapshot {
 				ticker := item.Ticker
@@ -217,6 +222,64 @@ func symbolsWithOpenPositions(instruments []bybit.Instrument, openPositions []st
 		if _, exists := seen[symbol]; exists { continue }
 		seen[symbol] = struct{}{}
 		result = append(result, symbol)
+	}
+	return result
+}
+
+func (p *Poller) syncDetailedSubscriptions(instruments []bybit.Instrument) []string {
+	ranking := RankingSnapshot{}
+	if provider, ok := p.monitor.(RankingSnapshotProvider); ok {
+		ranking = provider.Ranking()
+	}
+	symbols := selectedRankedSymbols(instruments, ranking, time.Now())
+
+	// Открытые позиции сохраняются вне зависимости от рейтинга и списка исключений.
+	symbols = symbolsWithOpenPositions(symbolsToInstruments(symbols), p.openPositionSymbols())
+	if subscriber, ok := p.subscriber.(SymbolSubscriber); ok {
+		subscriber.SetSymbols(symbols)
+	}
+	return symbols
+}
+
+func symbolsToInstruments(symbols []string) []bybit.Instrument {
+	result := make([]bybit.Instrument, 0, len(symbols))
+	for _, symbol := range symbols {
+		result = append(result, bybit.Instrument{Symbol: symbol})
+	}
+	return result
+}
+
+func selectedRankedSymbols(instruments []bybit.Instrument, ranking RankingSnapshot, now time.Time) []string {
+	if ranking.Status != RankingStatusReady ||
+		ranking.UpdatedAt.IsZero() ||
+		now.Before(ranking.UpdatedAt) ||
+		now.Sub(ranking.UpdatedAt) > 5*time.Second {
+		return nil
+	}
+
+	active := make(map[string]struct{}, len(instruments))
+	for _, instrument := range instruments {
+		if symbol := normalizeSymbol(instrument.Symbol); symbol != "" {
+			active[symbol] = struct{}{}
+		}
+	}
+	seen := make(map[string]struct{}, len(ranking.Candidates)+len(ranking.Accelerators))
+	result := make([]string, 0, len(ranking.Candidates)+len(ranking.Accelerators))
+	for _, group := range [][]RankedSymbol{ranking.Candidates, ranking.Accelerators} {
+		for _, item := range group {
+			symbol := normalizeSymbol(item.Symbol)
+			if symbol == "" {
+				continue
+			}
+			if _, exists := active[symbol]; !exists {
+				continue
+			}
+			if _, exists := seen[symbol]; exists {
+				continue
+			}
+			seen[symbol] = struct{}{}
+			result = append(result, symbol)
+		}
 	}
 	return result
 }
