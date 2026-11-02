@@ -14,7 +14,13 @@ func calculateStatistics(trades, openPositions []Position, equity []EquityPoint,
 	var grossProfit, grossLoss, profitSum, lossSum, rrSum float64
 	var rrCount int
 	for _, position := range openPositions {
-		stats.TotalSlippageUSDT += position.EntrySlippageUSDT + position.ExitSlippageUSDT
+		slippage := position.EntrySlippageUSDT + position.ExitSlippageUSDT
+		stats.TotalSlippageUSDT += slippage
+		symbol := stats.BySymbol[position.Symbol]
+		symbol.TotalFees += position.EntryFee + position.ExitFee
+		symbol.SlippageUSDT += slippage
+		symbol.NetFunding -= position.FundingPaid
+		stats.BySymbol[position.Symbol] = symbol
 	}
 	for _, trade := range trades {
 		pnl := trade.RealizedPnL
