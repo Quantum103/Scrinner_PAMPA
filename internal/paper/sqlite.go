@@ -35,7 +35,11 @@ func OpenSQLiteRepository(path string, busyTimeout time.Duration) (*SQLiteReposi
 	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
 		return nil, fmt.Errorf("создать каталог SQLite: %w", err)
 	}
-	databaseURL := url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}
+	sqlitePath := filepath.ToSlash(absolute)
+	if len(sqlitePath) >= 2 && sqlitePath[1] == ':' {
+		sqlitePath = "/" + sqlitePath // file:///C:/... на Windows и WSL
+	}
+	databaseURL := url.URL{Scheme: "file", Path: sqlitePath}
 	query := databaseURL.Query()
 	query.Set("_busy_timeout", strconv.FormatInt(busyTimeout.Milliseconds(), 10))
 	query.Set("_journal_mode", "WAL")
