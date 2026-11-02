@@ -330,3 +330,50 @@ func TestJoinMarketDataSkipsOnlySymbolsWithoutTicker(t *testing.T) {
 		t.Fatalf("неожиданный результат объединения: %+v", joined)
 	}
 }
+
+
+func TestFetchMinuteKlinesSortsResponseChronologically(t *testing.T) {
+	oldest := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC).UnixMilli()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if r.URL.Path != "/v5/market/kline" || query.Get("category") != "linear" ||
+			query.Get("symbol") != "AAAUSDT" || query.Get("interval") != "1" || query.Get("limit") != "21" {
+			t.Errorf("неверный запрос Kline: %s", r.URL.String())
+		}
+		fmt.Fprintf(w, `{"retCode":0,"retMsg":"OK","result":{"list":[
+			["%d","11","13","10","12","2.5","30"],
+			["%d","10","12","9","11","1.5","15"]
+		]}}`, oldest+60_000, oldest)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	client.httpClient = server.Client()
+	candles, err := client.FetchMinuteKlines(context.Background(), "aaausdt", 21)
+	if err != nil { t.Fatalf("FetchMinuteKlines() error = %v", err) }
+	if len(candles) != 2 { t.Fatalf("получено %d свечей, ожидалось 2", len(candles)) }
+	if !candles[0].StartTime.Equal(time.UnixMilli(oldest).UTC()) ||
+		!candles[1].StartTime.Equal(time.UnixMilli(oldest+60_000).UTC()) {
+		t.Fatalf("свечи не отсортированы: %+v", candles)
+	}
+	if candles[0].Volume != 1.5 || candles[0].Turnover != 15 || candles[1].Turnover != 30 {
+		t.Fatalf("volume/turnover прочитаны неверно: %+v", candles)
+	}
+}
+
+func TestFetchMinuteKlinesRejectsInvalidLimitAndRows(t *testing.T) {
+	client := NewClient("https://example.test")
+	if _, err := client.FetchMinuteKlines(context.Background(), "AAAUSDT", 20); err == nil {
+		t.Fatal("ожидалась ошибка при запросе менее 21 свечи")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"list":[["1","bad","2","1","2","1","2"]]}}`)
+	}))
+	defer server.Close()
+	client = NewClient(server.URL)
+	client.httpClient = server.Client()
+	if _, err := client.FetchMinuteKlines(context.Background(), "AAAUSDT", 21); err == nil {
+		t.Fatal("ожидалась ошибка для некорректной свечи")
+	}
+}

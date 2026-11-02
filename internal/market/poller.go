@@ -26,6 +26,10 @@ type MarketSnapshotSubscriber interface {
 	UpdateMarketSnapshot(items []bybit.MarketData, updatedAt time.Time)
 }
 
+type KlineSymbolSubscriber interface {
+	SetSymbols(symbols []string)
+}
+
 type MarketDataIssueReporter interface {
 	ReportMarketDataIssue(message string)
 }
@@ -46,10 +50,11 @@ type Poller struct {
 	excludedSymbols           map[string]struct{}
 	subscriber                any
 	monitor                   MarketSnapshotSubscriber
+	klineSymbols              KlineSymbolSubscriber
 	logger                    *slog.Logger
 }
 
-func NewPoller(client MarketRESTClient, interval, instrumentRefreshInterval time.Duration, excludedSymbols []string, subscriber any, monitor MarketSnapshotSubscriber, logger *slog.Logger) *Poller {
+func NewPoller(client MarketRESTClient, interval, instrumentRefreshInterval time.Duration, excludedSymbols []string, subscriber any, monitor MarketSnapshotSubscriber, klineSymbols KlineSymbolSubscriber, logger *slog.Logger) *Poller {
 	if logger == nil { logger = slog.Default() }
 	return &Poller{
 		client: client,
@@ -58,6 +63,7 @@ func NewPoller(client MarketRESTClient, interval, instrumentRefreshInterval time
 		excludedSymbols: symbolSet(excludedSymbols),
 		subscriber: subscriber,
 		monitor: monitor,
+		klineSymbols: klineSymbols,
 		logger: logger,
 	}
 }
@@ -95,6 +101,13 @@ func (p *Poller) Run(ctx context.Context) {
 
 			instruments = append(instruments[:0], updated...)
 			monitorInstruments = excludeInstruments(instruments, p.excludedSymbols)
+			if p.klineSymbols != nil {
+				symbols := make([]string, 0, len(monitorInstruments))
+				for _, instrument := range monitorInstruments {
+					symbols = append(symbols, instrument.Symbol)
+				}
+				p.klineSymbols.SetSymbols(symbols)
+			}
 			openPositions := p.openPositionSymbols()
 			if subscriber, ok := p.subscriber.(SymbolSubscriber); ok {
 				subscriber.SetSymbols(symbolsWithOpenPositions(monitorInstruments, openPositions))

@@ -16,12 +16,24 @@ type MonitorSnapshot struct {
 // Monitor хранит REST-состояние рынка независимо от подробных потоков сделок и стакана.
 // На этом этапе компонент только принимает и публикует снимок; рейтинг появится позже.
 type Monitor struct {
-	mu        sync.RWMutex
-	updatedAt time.Time
-	items     []bybit.MarketData
+	mu         sync.RWMutex
+	updatedAt  time.Time
+	items      []bybit.MarketData
+	candleData *CandleStore
 }
 
-func NewMonitor() *Monitor { return &Monitor{} }
+func NewMonitor(candleStores ...*CandleStore) *Monitor {
+	monitor := &Monitor{}
+	if len(candleStores) > 0 {
+		monitor.candleData = candleStores[0]
+	}
+	return monitor
+}
+
+// Candles возвращает хранилище минутных свечей, связанное с полным Market Monitor.
+func (m *Monitor) Candles() *CandleStore {
+	return m.candleData
+}
 
 func (m *Monitor) UpdateMarketSnapshot(items []bybit.MarketData, updatedAt time.Time) {
 	copyItems := append([]bybit.MarketData(nil), items...)

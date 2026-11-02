@@ -83,7 +83,7 @@ func TestPollerPublishesFullMarketWithoutAlphabeticalTruncation(t *testing.T) {
 	subscriber := &fakePollerSubscriber{updated: make(chan struct{}, 1), openPositions: []string{"BTCUSDT"}}
 	monitor := NewMonitor()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	poller := NewPoller(client, 10*time.Millisecond, time.Hour, []string{"BTCUSDT", "ETHUSDT"}, subscriber, monitor, logger)
+	poller := NewPoller(client, 10*time.Millisecond, time.Hour, []string{"BTCUSDT", "ETHUSDT"}, subscriber, monitor, nil, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

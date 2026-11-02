@@ -23,6 +23,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MarketData.InstrumentRefreshInterval != 15*time.Minute {
 		t.Errorf("InstrumentRefreshInterval = %s", cfg.MarketData.InstrumentRefreshInterval)
 	}
+	if cfg.MarketData.KlineHistoryLimit != 21 || cfg.MarketData.KlineHistoryWorkers != 5 ||
+		cfg.MarketData.KlineMaxSymbolsPerConnection != 100 || cfg.MarketData.KlineMaxArgsPerSubscribe != 10 ||
+		cfg.MarketData.KlineMaxShards != 20 || cfg.MarketData.KlineMaxDataAge != 90*time.Second ||
+		cfg.MarketData.KlineReconnectMin != time.Second || cfg.MarketData.KlineReconnectMax != 30*time.Second {
+		t.Errorf("Kline defaults не соответствуют безопасным значениям: %+v", cfg.MarketData)
+	}
 	for _, required := range []string{"BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"} {
 		if !containsSymbol(cfg.MarketData.ExcludedSymbols, required) {
 			t.Errorf("список исключений по умолчанию не содержит %s: %v", required, cfg.MarketData.ExcludedSymbols)
@@ -51,6 +57,14 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadEnvironmentOverrides(t *testing.T) {
 	t.Setenv("DATA_UPDATE_INTERVAL", "750ms")
 	t.Setenv("INSTRUMENT_REFRESH_INTERVAL", "5m")
+	t.Setenv("KLINE_HISTORY_LIMIT", "25")
+	t.Setenv("KLINE_HISTORY_WORKERS", "4")
+	t.Setenv("KLINE_MAX_SYMBOLS_PER_CONNECTION", "80")
+	t.Setenv("KLINE_MAX_ARGS_PER_SUBSCRIBE", "8")
+	t.Setenv("KLINE_MAX_SHARDS", "16")
+	t.Setenv("KLINE_MAX_DATA_AGE", "75s")
+	t.Setenv("KLINE_RECONNECT_MIN", "2s")
+	t.Setenv("KLINE_RECONNECT_MAX", "45s")
 	t.Setenv("WS_MAX_DATA_AGE", "8s")
 	t.Setenv("APP_DB_PATH", t.TempDir()+"/paper-test.db")
 	t.Setenv("APP_DB_BUSY_TIMEOUT", "8s")
@@ -79,6 +93,12 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	}
 	if cfg.MarketData.InstrumentRefreshInterval != 5*time.Minute {
 		t.Errorf("InstrumentRefreshInterval = %s", cfg.MarketData.InstrumentRefreshInterval)
+	}
+	if cfg.MarketData.KlineHistoryLimit != 25 || cfg.MarketData.KlineHistoryWorkers != 4 ||
+		cfg.MarketData.KlineMaxSymbolsPerConnection != 80 || cfg.MarketData.KlineMaxArgsPerSubscribe != 8 ||
+		cfg.MarketData.KlineMaxShards != 16 || cfg.MarketData.KlineMaxDataAge != 75*time.Second ||
+		cfg.MarketData.KlineReconnectMin != 2*time.Second || cfg.MarketData.KlineReconnectMax != 45*time.Second {
+		t.Errorf("Kline overrides не загружены: %+v", cfg.MarketData)
 	}
 	wantExcluded := []string{"BTCUSDT", "ETHUSDT", "DOGEUSDT"}
 	if !equalSymbols(cfg.MarketData.ExcludedSymbols, wantExcluded) {
@@ -390,4 +410,23 @@ func TestMarketExcludedSymbolsCanBeEmpty(t *testing.T) {
 func TestMarketExcludedSymbolsRejectInvalidSymbol(t *testing.T) {
 	t.Setenv("MARKET_EXCLUDED_SYMBOLS", "BTC,ETHUSDT")
 	if _, err := Load(); err == nil { t.Fatal("ожидалась ошибка для символа без суффикса USDT") }
+}
+
+
+func TestValidateRejectsKlineConnectionLimitAboveBybitLimit(t *testing.T) {
+	cfg, err := Load()
+	if err != nil { t.Fatal(err) }
+	cfg.MarketData.KlineMaxSymbolsPerConnection = 101
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("ожидалась ошибка при более чем 100 Kline args на соединение")
+	}
+}
+
+func TestValidateRejectsKlineHistoryBelowWarmupMinimum(t *testing.T) {
+	cfg, err := Load()
+	if err != nil { t.Fatal(err) }
+	cfg.MarketData.KlineHistoryLimit = 20
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("ожидалась ошибка для истории меньше 21 свечи (20 завершённых + возможная текущая)")
+	}
 }

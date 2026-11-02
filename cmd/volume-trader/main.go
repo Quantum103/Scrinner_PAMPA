@@ -92,7 +92,27 @@ func main() {
 	}()
 
 	if cfg.MarketData.Enabled {
-		marketMonitor := market.NewMonitor()
+		candleStore := market.NewCandleStore(cfg.MarketData.KlineMaxDataAge)
+		marketMonitor := market.NewMonitor(candleStore)
+		klineManager, err := market.NewKlineManager(client, cfg.Bybit.PublicWSURL, market.KlineConfig{
+			HistoryLimit: cfg.MarketData.KlineHistoryLimit,
+			HistoryWorkers: cfg.MarketData.KlineHistoryWorkers,
+			MaxSymbolsPerConnection: cfg.MarketData.KlineMaxSymbolsPerConnection,
+			MaxArgsPerSubscribe: cfg.MarketData.KlineMaxArgsPerSubscribe,
+			MaxShards: cfg.MarketData.KlineMaxShards,
+			MaxDataAge: cfg.MarketData.KlineMaxDataAge,
+			ReconnectMin: cfg.MarketData.KlineReconnectMin,
+			ReconnectMax: cfg.MarketData.KlineReconnectMax,
+		}, marketMonitor.Candles(), logger)
+		if err != nil {
+			logger.Error("Не удалось создать Kline Monitor", "ошибка", err)
+			os.Exit(1)
+		}
+		klineDone := make(chan struct{})
+		go func() {
+			defer close(klineDone)
+			klineManager.Run(ctx)
+		}()
 		poller := market.NewPoller(
 			client,
 			cfg.MarketData.UpdateInterval,
@@ -100,9 +120,11 @@ func main() {
 			cfg.MarketData.ExcludedSymbols,
 			wsManager,
 			marketMonitor,
+			klineManager,
 			logger,
 		)
 		poller.Run(ctx)
+		<-klineDone
 	} else {
 		logger.Info("Получение рыночных данных отключено; Telegram управление доступно")
 		<-ctx.Done()

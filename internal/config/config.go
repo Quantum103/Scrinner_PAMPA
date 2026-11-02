@@ -35,10 +35,18 @@ type BybitConfig struct {
 }
 
 type MarketDataConfig struct {
-	Enabled                   bool
-	UpdateInterval            time.Duration
-	InstrumentRefreshInterval time.Duration
-	ExcludedSymbols           []string
+	Enabled                         bool
+	UpdateInterval                  time.Duration
+	InstrumentRefreshInterval       time.Duration
+	ExcludedSymbols                 []string
+	KlineHistoryLimit               int
+	KlineHistoryWorkers             int
+	KlineMaxSymbolsPerConnection    int
+	KlineMaxArgsPerSubscribe        int
+	KlineMaxShards                  int
+	KlineMaxDataAge                 time.Duration
+	KlineReconnectMin               time.Duration
+	KlineReconnectMax               time.Duration
 }
 
 type WebSocketConfig struct {
@@ -110,6 +118,14 @@ func Load() (Config, error) {
 				"DOTUSDT", "LTCUSDT", "BCHUSDT", "TONUSDT", "SUIUSDT",
 				"XLMUSDT", "SHIBUSDT",
 			},
+			KlineHistoryLimit:            21,
+			KlineHistoryWorkers:          5,
+			KlineMaxSymbolsPerConnection: 100,
+			KlineMaxArgsPerSubscribe:     10,
+			KlineMaxShards:               20,
+			KlineMaxDataAge:              90 * time.Second,
+			KlineReconnectMin:            time.Second,
+			KlineReconnectMax:            30 * time.Second,
 		},
 		Analysis:      marketanalysis.DefaultConfig(),
 		EntryStrategy: marketstrategy.DefaultConfig(),
@@ -179,6 +195,30 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.MarketData.ExcludedSymbols, err = stringListValue("MARKET_EXCLUDED_SYMBOLS", cfg.MarketData.ExcludedSymbols); err != nil {
+		return Config{}, err
+	}
+	if cfg.MarketData.KlineHistoryLimit, err = intValue("KLINE_HISTORY_LIMIT", cfg.MarketData.KlineHistoryLimit); err != nil {
+		return Config{}, err
+	}
+	if cfg.MarketData.KlineHistoryWorkers, err = intValue("KLINE_HISTORY_WORKERS", cfg.MarketData.KlineHistoryWorkers); err != nil {
+		return Config{}, err
+	}
+	if cfg.MarketData.KlineMaxSymbolsPerConnection, err = intValue("KLINE_MAX_SYMBOLS_PER_CONNECTION", cfg.MarketData.KlineMaxSymbolsPerConnection); err != nil {
+		return Config{}, err
+	}
+	if cfg.MarketData.KlineMaxArgsPerSubscribe, err = intValue("KLINE_MAX_ARGS_PER_SUBSCRIBE", cfg.MarketData.KlineMaxArgsPerSubscribe); err != nil {
+		return Config{}, err
+	}
+	if cfg.MarketData.KlineMaxShards, err = intValue("KLINE_MAX_SHARDS", cfg.MarketData.KlineMaxShards); err != nil {
+		return Config{}, err
+	}
+	if cfg.MarketData.KlineMaxDataAge, err = durationValue("KLINE_MAX_DATA_AGE", cfg.MarketData.KlineMaxDataAge); err != nil {
+		return Config{}, err
+	}
+	if cfg.MarketData.KlineReconnectMin, err = durationValue("KLINE_RECONNECT_MIN", cfg.MarketData.KlineReconnectMin); err != nil {
+		return Config{}, err
+	}
+	if cfg.MarketData.KlineReconnectMax, err = durationValue("KLINE_RECONNECT_MAX", cfg.MarketData.KlineReconnectMax); err != nil {
 		return Config{}, err
 	}
 	if cfg.WebSocket.OrderbookDepth, err = intValue("WS_ORDERBOOK_DEPTH", cfg.WebSocket.OrderbookDepth); err != nil {
@@ -413,6 +453,27 @@ func (c Config) Validate() error {
 	}
 	if err := validateMarketSymbols("MARKET_EXCLUDED_SYMBOLS", c.MarketData.ExcludedSymbols); err != nil {
 		return err
+	}
+	if c.MarketData.KlineHistoryLimit < 21 || c.MarketData.KlineHistoryLimit > 1000 {
+		return fmt.Errorf("KLINE_HISTORY_LIMIT должен быть в диапазоне 21..1000")
+	}
+	if c.MarketData.KlineHistoryWorkers < 1 || c.MarketData.KlineHistoryWorkers > 32 {
+		return fmt.Errorf("KLINE_HISTORY_WORKERS должен быть в диапазоне 1..32")
+	}
+	if c.MarketData.KlineMaxSymbolsPerConnection < 1 || c.MarketData.KlineMaxSymbolsPerConnection > 100 {
+		return fmt.Errorf("KLINE_MAX_SYMBOLS_PER_CONNECTION должен быть в диапазоне 1..100")
+	}
+	if c.MarketData.KlineMaxArgsPerSubscribe < 1 || c.MarketData.KlineMaxArgsPerSubscribe > 100 {
+		return fmt.Errorf("KLINE_MAX_ARGS_PER_SUBSCRIBE должен быть в диапазоне 1..100")
+	}
+	if c.MarketData.KlineMaxShards < 1 || c.MarketData.KlineMaxShards > 100 {
+		return fmt.Errorf("KLINE_MAX_SHARDS должен быть в диапазоне 1..100")
+	}
+	if c.MarketData.KlineMaxDataAge < time.Second {
+		return fmt.Errorf("KLINE_MAX_DATA_AGE должен быть не меньше секунды")
+	}
+	if c.MarketData.KlineReconnectMin <= 0 || c.MarketData.KlineReconnectMax < c.MarketData.KlineReconnectMin {
+		return fmt.Errorf("KLINE_RECONNECT_MIN/MAX заданы некорректно")
 	}
 	if c.WebSocket.OrderbookDepth != 50 {
 		return fmt.Errorf("WS_ORDERBOOK_DEPTH должен быть равен 50 для выбранного потока стакана")

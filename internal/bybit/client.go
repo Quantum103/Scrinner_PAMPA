@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,6 +71,25 @@ type Ticker struct {
 type MarketData struct {
 	Instrument Instrument
 	Ticker     Ticker
+}
+
+// Kline — завершённая или текущая минутная свеча линейного USDT-контракта.
+// Volume измеряется в базовой монете, Turnover — в USDT.
+type Kline struct {
+	StartTime time.Time
+	Open      float64
+	High      float64
+	Low       float64
+	Close     float64
+	Volume    float64
+	Turnover  float64
+}
+
+type klineResponse struct {
+	apiResponse
+	Result struct {
+		List [][]string `json:"list"`
+	} `json:"result"`
 }
 
 type apiResponse struct {
@@ -246,6 +267,68 @@ func (c *Client) FetchLinearTickers(ctx context.Context) ([]Ticker, error) {
 		})
 	}
 	return tickers, nil
+}
+
+// FetchMinuteKlines загружает минутные свечи USDT Linear в хронологическом порядке.
+// Bybit возвращает список от новых свечей к старым; текущая незавершённая свеча
+// также может присутствовать в ответе и отфильтровывается владельцем истории.
+func (c *Client) FetchMinuteKlines(ctx context.Context, symbol string, limit int) ([]Kline, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if symbol == "" || !strings.HasSuffix(symbol, "USDT") {
+		return nil, fmt.Errorf("для Kline требуется символ USDT Linear, получено %q", symbol)
+	}
+	if limit < 21 || limit > 1000 {
+		return nil, fmt.Errorf("лимит минутных свечей должен быть в диапазоне 21..1000, получено %d", limit)
+	}
+
+	query := url.Values{
+		"category": {"linear"},
+		"symbol":   {symbol},
+		"interval": {"1"},
+		"limit":    {strconv.Itoa(limit)},
+	}
+	var payload klineResponse
+	if err := c.get(ctx, "/v5/market/kline", query, &payload); err != nil {
+		return nil, fmt.Errorf("получить минутные свечи %s: %w", symbol, err)
+	}
+
+	result := make([]Kline, 0, len(payload.Result.List))
+	for index, row := range payload.Result.List {
+		if len(row) < 7 {
+			return nil, fmt.Errorf("Kline %s строка %d: ожидалось 7 полей, получено %d", symbol, index, len(row))
+		}
+		startMillis, err := strconv.ParseInt(row[0], 10, 64)
+		if err != nil || startMillis <= 0 {
+			return nil, fmt.Errorf("Kline %s строка %d: некорректный startTime %q", symbol, index, row[0])
+		}
+		values := make([]float64, 6)
+		for valueIndex := range values {
+			value, parseErr := strconv.ParseFloat(row[valueIndex+1], 64)
+			if parseErr != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+				return nil, fmt.Errorf("Kline %s строка %d: некорректное числовое поле %q", symbol, index, row[valueIndex+1])
+			}
+			values[valueIndex] = value
+		}
+		if values[0] <= 0 || values[1] <= 0 || values[2] <= 0 || values[3] <= 0 ||
+			values[4] < 0 || values[5] < 0 || values[1] < values[2] {
+			return nil, fmt.Errorf("Kline %s строка %d: недопустимые OHLC/volume/turnover", symbol, index)
+		}
+		if values[1] < math.Max(values[0], values[3]) || values[2] > math.Min(values[0], values[3]) {
+			return nil, fmt.Errorf("Kline %s строка %d: high/low противоречат open/close", symbol, index)
+		}
+		result = append(result, Kline{
+			StartTime: time.UnixMilli(startMillis).UTC(),
+			Open: values[0], High: values[1], Low: values[2], Close: values[3],
+			Volume: values[4], Turnover: values[5],
+		})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].StartTime.Before(result[j].StartTime) })
+	for i := 1; i < len(result); i++ {
+		if result[i].StartTime.Equal(result[i-1].StartTime) {
+			return nil, fmt.Errorf("Kline %s: повторяющийся startTime %s", symbol, result[i].StartTime)
+		}
+	}
+	return result, nil
 }
 
 // JoinMarketData объединяет один полный снимок тикеров с переданными спецификациями.
