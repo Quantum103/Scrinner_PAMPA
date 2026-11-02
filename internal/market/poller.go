@@ -22,6 +22,10 @@ type MarketDataSubscriber interface {
 	UpdateMarketData(items []bybit.MarketData)
 }
 
+type MarketDataIssueReporter interface {
+	ReportMarketDataIssue(message string)
+}
+
 type Poller struct {
 	client                    *bybit.Client
 	interval                  time.Duration
@@ -63,6 +67,7 @@ func (p *Poller) Run(ctx context.Context) {
 					return
 				}
 				p.logger.Warn("Не удалось обновить список контрактов Bybit", "ошибка", err)
+				p.reportMarketDataIssue("Не удалось обновить список контрактов Bybit: " + err.Error())
 				resetTimer(instrumentTimer, retryDelay)
 				retryDelay *= 2
 				if retryDelay > maxInstrumentRetry {
@@ -103,6 +108,7 @@ func (p *Poller) Run(ctx context.Context) {
 					return
 				}
 				p.logger.Warn("Не удалось обновить рыночные данные Bybit", "ошибка", err)
+				p.reportMarketDataIssue("Не удалось обновить рыночные данные Bybit: " + err.Error())
 				continue
 			}
 
@@ -134,6 +140,12 @@ func (p *Poller) Run(ctx context.Context) {
 				)
 			}
 		}
+	}
+}
+
+func (p *Poller) reportMarketDataIssue(message string) {
+	if reporter, ok := p.subscriber.(MarketDataIssueReporter); ok {
+		reporter.ReportMarketDataIssue(message)
 	}
 }
 
