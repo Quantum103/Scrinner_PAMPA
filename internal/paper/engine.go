@@ -3,10 +3,14 @@
 package paper
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -156,9 +160,24 @@ type Funding struct {
 }
 
 type Position struct {
+	TradeID            string
+	SignalID           string
+	EntryReason        string
+	EntrySignal        strategy.Signal
 	Symbol             string
 	Direction          string
 	EntryPrice         float64
+	ExitPrice          float64
+	EntrySlippageUSDT  float64
+	ExitSlippageUSDT   float64
+	InitialRiskUSDT    float64
+	MFEUSDT            float64
+	MAEUSDT            float64
+	MFEPercent         float64
+	MAEPercent         float64
+	LowWaterPrice      float64
+	ExitNotional       float64
+	RealizedRR         float64
 	InitialQuantity    float64
 	RemainingQuantity  float64
 	ClosedQuantity     float64
@@ -216,11 +235,15 @@ type Event struct {
 	GrossPnL          float64
 	NetPnL            float64
 	RemainingQuantity float64
+	SlippageUSDT      float64
 	FlowSignalCount   int
 	FlowConfirmations int
 }
 
 type AccountSnapshot struct {
+	Mode             string
+	Statistics       PaperStatistics
+	EquityHistory    []EquityPoint
 	Enabled          bool
 	Currency         string
 	Balance          float64
@@ -238,6 +261,12 @@ type AccountSnapshot struct {
 
 type Engine struct {
 	mu            sync.RWMutex
+	repository    Repository
+	initialBalance float64
+	equityHistory []EquityPoint
+	processedSignals map[string]struct{}
+	storageErr    error
+	lastEquityRecordAt time.Time
 	cfg           Config
 	balance       float64
 	realizedPnL   float64
@@ -252,16 +281,133 @@ type Engine struct {
 }
 
 func New(cfg Config) (*Engine, error) {
+	return NewWithRepository(cfg, nil)
+}
+
+// NewWithRepository восстанавливает единый Paper Trading account, открытые позиции,
+// закрытые сделки и обработанные сигналы до начала приёма рыночных обновлений.
+func NewWithRepository(cfg Config, repository Repository) (*Engine, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Engine{
-		cfg:       cfg,
-		balance:   cfg.InitialBalanceUSDT,
-		contracts: make(map[string]Contract),
-		funding:   make(map[string]Funding),
-		positions: make(map[string]*Position),
-	}, nil
+	e := &Engine{
+		cfg: cfg, repository: repository,
+		balance: cfg.InitialBalanceUSDT, initialBalance: cfg.InitialBalanceUSDT,
+		contracts: make(map[string]Contract), funding: make(map[string]Funding),
+		positions: make(map[string]*Position), processedSignals: make(map[string]struct{}),
+	}
+	if repository == nil {
+		return e, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	state, err := repository.Load(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("восстановить Paper Trading из SQLite: %w", err)
+	}
+	if !state.Found {
+		now := time.Now().UTC()
+		e.recordEquityLocked(now, true)
+		if err := e.persistLocked(now); err != nil {
+			return nil, fmt.Errorf("инициализировать Paper Trading account в SQLite: %w", err)
+		}
+		return e, nil
+	}
+	if !finitePositive(state.InitialBalanceUSDT) || !finite(state.Balance) {
+		return nil, errors.New("SQLite содержит некорректный Paper Trading account")
+	}
+	if len(state.OpenPositions) > cfg.MaxOpenPositions {
+		return nil, fmt.Errorf("SQLite содержит %d открытых позиций, конфигурация разрешает %d", len(state.OpenPositions), cfg.MaxOpenPositions)
+	}
+	e.initialBalance = state.InitialBalanceUSDT
+	e.balance = state.Balance
+	e.realizedPnL = state.RealizedPnL
+	e.totalFees = state.TotalFees
+	e.netFunding = state.NetFunding
+	e.closedTrades = append([]Position(nil), state.ClosedTrades...)
+	e.equityHistory = append([]EquityPoint(nil), state.EquityHistory...)
+	if len(e.equityHistory) > 0 {
+		e.lastEquityRecordAt = e.equityHistory[len(e.equityHistory)-1].At
+	}
+	for i := range state.OpenPositions {
+		position := state.OpenPositions[i]
+		if position.Symbol == "" || !finitePositive(position.RemainingQuantity) || position.TradeID == "" {
+			return nil, errors.New("SQLite содержит некорректную открытую Paper Trading позицию")
+		}
+		copy := position
+		e.positions[position.Symbol] = &copy
+	}
+	for _, id := range state.ProcessedSignalIDs {
+		if id != "" {
+			e.processedSignals[id] = struct{}{}
+		}
+	}
+	e.updatedAt = state.UpdatedAt
+	return e, nil
+}
+
+func (e *Engine) persistentStateLocked(now time.Time) PersistentState {
+	positions := make([]Position, 0, len(e.positions))
+	for _, position := range e.positions {
+		positions = append(positions, *position)
+	}
+	closed := append([]Position(nil), e.closedTrades...)
+	equity := append([]EquityPoint(nil), e.equityHistory...)
+	signals := make([]string, 0, len(e.processedSignals))
+	for id := range e.processedSignals {
+		signals = append(signals, id)
+	}
+	sort.Strings(signals)
+	return PersistentState{
+		Found: true, InitialBalanceUSDT: e.initialBalance, Balance: e.balance,
+		RealizedPnL: e.realizedPnL, TotalFees: e.totalFees, NetFunding: e.netFunding,
+		OpenPositions: positions, ClosedTrades: closed, EquityHistory: equity,
+		ProcessedSignalIDs: signals, UpdatedAt: now,
+	}
+}
+
+func (e *Engine) persistLocked(now time.Time) error {
+	if e.repository == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := e.repository.Save(ctx, e.persistentStateLocked(now)); err != nil {
+		e.storageErr = err
+		e.addEvent(Event{Type: "persistence_error", At: now, Reason: "не удалось атомарно сохранить Paper Trading в SQLite: " + err.Error()})
+		return err
+	}
+	e.storageErr = nil
+	return nil
+}
+
+func (e *Engine) recordEquityLocked(now time.Time, force bool) {
+	if now.IsZero() {
+		return
+	}
+	if !force && !e.lastEquityRecordAt.IsZero() && now.Sub(e.lastEquityRecordAt) < time.Second {
+		return
+	}
+	point := EquityPoint{
+		At: now.UTC(), Balance: e.balance, Equity: e.balance + e.unrealizedPnLLocked(),
+		RealizedPnL: e.realizedPnL, UnrealizedPnL: e.unrealizedPnLLocked(),
+	}
+	if len(e.equityHistory) > 0 && !now.After(e.lastEquityRecordAt) {
+		e.equityHistory[len(e.equityHistory)-1] = point
+	} else {
+		e.equityHistory = append(e.equityHistory, point)
+	}
+	e.lastEquityRecordAt = point.At
+}
+
+func signalID(signal strategy.Signal) string {
+	return fmt.Sprintf("%s|%s|%d|%s", signal.Symbol, signal.Direction,
+		signal.Time.UTC().UnixNano(), strconv.FormatFloat(signal.Price, 'g', -1, 64))
+}
+
+func tradeIDForSignal(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])
 }
 
 // UpdateMarketData сохраняет только публичные спецификации контрактов и funding-данные REST-тикеров.
