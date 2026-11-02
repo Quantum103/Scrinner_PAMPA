@@ -19,6 +19,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Gofmt
+        run: gofmt -w ./cmd ./internal
       - name: Test
         run: go test ./...
       - name: Race detector
