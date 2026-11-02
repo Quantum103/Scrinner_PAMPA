@@ -154,6 +154,39 @@ func TestTradeParsingDeduplicationAndOverflowAreVisible(t *testing.T) {
 	}
 }
 
+func TestStaleTradeIsDroppedWithoutRejectingFreshTradesInBatch(t *testing.T) {
+	store := newTestStore(t, 50, 10)
+	now := time.Now()
+	payload := fmt.Sprintf(`{"topic":"publicTrade.BTCUSDT","type":"snapshot","ts":%d,"data":[
+		{"T":%d,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100.1","i":"stale-trade"},
+		{"T":%d,"s":"BTCUSDT","S":"Buy","v":"0.2","p":"100.2","i":"fresh-trade"}
+	]}`,
+		now.UnixMilli(),
+		now.Add(-6*time.Second).UnixMilli(),
+		now.Add(-100*time.Millisecond).UnixMilli(),
+	)
+
+	err := store.ApplyTrades([]byte(payload), now)
+	if !errors.Is(err, ErrTradeDataGap) {
+		t.Fatalf("ApplyTrades() error = %v, want ErrTradeDataGap", err)
+	}
+
+	state, ok := store.Snapshot("BTCUSDT", now)
+	if !ok {
+		t.Fatal("symbol snapshot is missing")
+	}
+	if !state.TradeGap {
+		t.Fatal("stale trade did not mark the history as incomplete")
+	}
+	if state.LastTrade == nil || state.LastTrade.TradeID != "fresh-trade" {
+		t.Fatalf("fresh trade was not retained after stale trade: %+v", state.LastTrade)
+	}
+	queued := store.DrainTrades("BTCUSDT", 10)
+	if len(queued) != 1 || queued[0].TradeID != "fresh-trade" {
+		t.Fatalf("trade queue contains stale or missing trades: %+v", queued)
+	}
+}
+
 func TestReconnectKeepsSignalDisabledUntilTradeGapAcknowledged(t *testing.T) {
 	store := newTestStore(t, 50, 10)
 	now := time.Now()
