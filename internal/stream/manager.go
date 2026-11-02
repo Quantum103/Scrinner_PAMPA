@@ -142,6 +142,10 @@ func (m *Manager) PaperSnapshot() marketpaper.AccountSnapshot {
 	return m.store.PaperSnapshot(time.Now())
 }
 
+func (m *Manager) PaperStatistics() marketpaper.PaperStatistics {
+	return m.store.PaperStatistics(time.Now())
+}
+
 // SetSymbols объединяет частые обновления: важен только последний полный список инструментов.
 func (m *Manager) SetSymbols(symbols []string) {
 	normalized := normalizeSymbols(symbols)
