@@ -57,8 +57,8 @@ func TestCandleStoreLoadsTwentyCompletedCandlesAndExcludesCurrentRESTBar(t *test
 	if snapshot.History[19].Turnover != 2000 || snapshot.History[19].Volume != 20 {
 		t.Fatalf("volume/turnover потеряны: %+v", snapshot.History[19])
 	}
-	if snapshot.HistoryReady {
-		t.Fatal("история не должна считаться готовой до получения текущего Kline WebSocket")
+	if !snapshot.HistoryReady {
+		t.Fatal("20 завершённых свечей должны прогреть историческую базу")
 	}
 	if snapshot.Status != CandleStatusWarmingUp {
 		t.Fatalf("status = %s, ожидался warming_up", snapshot.Status)
@@ -148,7 +148,7 @@ func TestCandleStoreDetectsSkippedCandleAndReconnectReloadsHistory(t *testing.T)
 
 	store.MarkDisconnected("AAAUSDT", "test disconnect")
 	snapshot, _ = store.Snapshot("AAAUSDT", now.Add(2*time.Minute))
-	if snapshot.Connected || snapshot.Current != nil || snapshot.HistoryReady {
+	if snapshot.Connected || snapshot.Current != nil || snapshot.HistoryReady || snapshot.Status != CandleStatusDisconnected {
 		t.Fatalf("после разрыва остались пригодные текущие данные: %+v", snapshot)
 	}
 	reconnectedAt := now.Add(3 * time.Minute)

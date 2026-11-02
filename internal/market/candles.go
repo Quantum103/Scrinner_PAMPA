@@ -53,6 +53,7 @@ type CandleSnapshot struct {
 type candleState struct {
 	active        bool
 	connected     bool
+	everConnected bool
 	historyReady  bool
 	history       []Candle
 	wsConfirmed   map[int64]Candle
@@ -200,6 +201,7 @@ func (s *CandleStore) ApplyUpdate(symbol string, candle Candle, receivedAt time.
 	}
 
 	state.connected = true
+	state.everConnected = true
 	state.lastUpdatedAt = receivedAt.UTC()
 	if candle.Confirmed {
 		key := candle.StartTime.UnixMilli()
@@ -283,10 +285,12 @@ func (s *CandleStore) Snapshot(symbol string, now time.Time) (CandleSnapshot, bo
 		now.Sub(state.lastUpdatedAt) <= s.maxDataAge
 	status := CandleStatusWarmingUp
 	switch {
+	case state.everConnected && !state.connected:
+		status = CandleStatusDisconnected
 	case !state.historyReady:
 		status = CandleStatusWarmingUp
-	case !state.connected:
-		status = CandleStatusDisconnected
+	case !state.everConnected:
+		status = CandleStatusWarmingUp
 	case !fresh:
 		status = CandleStatusStale
 	case state.current == nil || !state.current.StartTime.Equal(now.UTC().Truncate(candleInterval)):
