@@ -18,6 +18,11 @@ const (
 	StatusDisconnected     = "disconnected"
 )
 
+var (
+	ErrTradeTimestampOutOfRange = errors.New("время сделки слишком далеко от времени получения")
+	ErrTradeOutOfOrder           = errors.New("получена сделка за пределами допустимого порядка времени")
+)
+
 type Config struct {
 	RVOLInterval                  time.Duration
 	RVOLLookbackIntervals         int
@@ -307,12 +312,15 @@ func (a *Analyzer) AddTrade(symbol string, trade Trade) error {
 	if trade.Time.After(trade.ReceivedAt.Add(a.maxDataAge)) || trade.ReceivedAt.Sub(trade.Time) > a.maxDataAge {
 		state = newSymbolState(trade.ReceivedAt, true, "время сделки вышло за пределы допустимого рассогласования")
 		a.states[symbol] = state
-		return errors.New("время сделки слишком далеко от времени получения")
+		return fmt.Errorf("%w: биржевое время %s, время получения %s, допуск %s",
+			ErrTradeTimestampOutOfRange, trade.Time.Format(time.RFC3339Nano), trade.ReceivedAt.Format(time.RFC3339Nano), a.maxDataAge)
 	}
 	if !state.lastTradeTime.IsZero() && trade.Time.Before(state.lastTradeTime.Add(-a.maxDataAge)) {
+		previousTradeTime := state.lastTradeTime
 		state = newSymbolState(trade.ReceivedAt, true, "обнаружена старая или переставленная сделка")
 		a.states[symbol] = state
-		return errors.New("получена сделка за пределами допустимого порядка времени")
+		return fmt.Errorf("%w: время сделки %s, предыдущая сделка %s, допуск %s",
+			ErrTradeOutOfOrder, trade.Time.Format(time.RFC3339Nano), previousTradeTime.Format(time.RFC3339Nano), a.maxDataAge)
 	}
 
 	bucketKey := trade.Time.UnixNano() / int64(analysisBucketSize)
