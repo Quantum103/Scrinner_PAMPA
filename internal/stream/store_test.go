@@ -187,6 +187,63 @@ func TestStaleTradeIsDroppedWithoutRejectingFreshTradesInBatch(t *testing.T) {
 	}
 }
 
+func TestTradeGapClearsOnlyAfterAnalysisHistoryIsReady(t *testing.T) {
+	cfg := marketanalysis.DefaultConfig()
+	cfg.RVOLInterval = time.Second
+	cfg.RVOLLookbackIntervals = 1
+	cfg.FlowWindow = time.Second
+	cfg.CVDWindow = 2 * time.Second
+	cfg.MomentumWindows = []time.Duration{time.Second}
+	cfg.VolumeAccelerationWindow = time.Second
+
+	store, err := NewStoreWithAnalysis(50, 5*time.Second, 100, 100, cfg)
+	if err != nil {
+		t.Fatalf("NewStoreWithAnalysis() error = %v", err)
+	}
+
+	now := time.Unix(1_700_000_005, 500_000_000).UTC()
+	evaluationAt := now.Add(400 * time.Millisecond)
+	store.startSessionAt([]string{"BTCUSDT"}, now.Add(-10*time.Second))
+	store.analyzer.MarkGap("BTCUSDT", now.Add(-5*time.Second), "тестовый разрыв")
+	store.mu.Lock()
+	store.states["BTCUSDT"].tradeGap = true
+	store.mu.Unlock()
+
+	book := `{"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1,"data":{"s":"BTCUSDT","b":[["100","2"],["99.9","3"]],"a":[["100.02","4"],["100.03","5"]],"u":10,"seq":10}}`
+	if err := store.ApplyOrderBook(withFreshTimestamp(book, evaluationAt), evaluationAt); err != nil {
+		t.Fatalf("ApplyOrderBook() error = %v", err)
+	}
+
+	trades := fmt.Sprintf(`{"topic":"publicTrade.BTCUSDT","type":"snapshot","ts":%d,"data":[
+		{"T":%d,"s":"BTCUSDT","S":"Buy","v":"10","p":"100","i":"gap-1"},
+		{"T":%d,"s":"BTCUSDT","S":"Buy","v":"10","p":"100.01","i":"gap-2"},
+		{"T":%d,"s":"BTCUSDT","S":"Buy","v":"1","p":"100.01","i":"gap-3"},
+		{"T":%d,"s":"BTCUSDT","S":"Buy","v":"20","p":"100.02","i":"gap-4"},
+		{"T":%d,"s":"BTCUSDT","S":"Sell","v":"1","p":"100.02","i":"gap-5"}
+	]}`,
+		evaluationAt.UnixMilli(),
+		now.Add(-1400*time.Millisecond).UnixMilli(),
+		now.Add(-900*time.Millisecond).UnixMilli(),
+		now.Add(-600*time.Millisecond).UnixMilli(),
+		now.Add(100*time.Millisecond).UnixMilli(),
+		now.Add(300*time.Millisecond).UnixMilli(),
+	)
+	if err := store.ApplyTrades([]byte(trades), evaluationAt); err != nil {
+		t.Fatalf("ApplyTrades() error = %v", err)
+	}
+
+	state, ok := store.Snapshot("BTCUSDT", evaluationAt)
+	if !ok {
+		t.Fatal("symbol snapshot is missing")
+	}
+	if state.Analysis.Status != marketanalysis.StatusReady {
+		t.Fatalf("analysis status = %q, want ready: %+v", state.Analysis.Status, state.Analysis)
+	}
+	if state.TradeGap {
+		t.Fatal("trade gap stayed active after the complete analysis history was rebuilt")
+	}
+}
+
 func TestReconnectKeepsSignalDisabledUntilTradeGapAcknowledged(t *testing.T) {
 	store := newTestStore(t, 50, 10)
 	now := time.Now()
