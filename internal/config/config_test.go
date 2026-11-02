@@ -35,6 +35,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Database.Path != "./data/volume_trader.db" || cfg.Database.BusyTimeout != 5*time.Second {
 		t.Errorf("Database defaults = %+v", cfg.Database)
 	}
+	if cfg.Telegram.DailyLossLimitPercent != 5 || len(cfg.Telegram.AllowedUserIDs) != 0 {
+		t.Errorf("Telegram defaults = %+v", cfg.Telegram)
+	}
 	if MarketCategory != "linear" {
 		t.Errorf("MarketCategory = %q", MarketCategory)
 	}
@@ -46,6 +49,9 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	t.Setenv("WS_MAX_DATA_AGE", "8s")
 	t.Setenv("APP_DB_PATH", t.TempDir()+"/paper-test.db")
 	t.Setenv("APP_DB_BUSY_TIMEOUT", "8s")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_USER_IDS", "123456, 987654")
+	t.Setenv("TELEGRAM_DAILY_LOSS_LIMIT_PERCENT", "4.5")
 	t.Setenv("WS_MAX_SYMBOLS_PER_CONNECTION", "20")
 	t.Setenv("MAX_TRACKED_CONTRACTS", "25")
 	t.Setenv("VIRTUAL_DEPOSIT_USDT", "25.5")
@@ -76,6 +82,11 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	}
 	if filepath.Base(cfg.Database.Path) != "paper-test.db" || cfg.Database.BusyTimeout != 8*time.Second {
 		t.Errorf("Database overrides = %+v", cfg.Database)
+	}
+	if cfg.Telegram.BotToken != "test-token" || cfg.Telegram.DailyLossLimitPercent != 4.5 ||
+		len(cfg.Telegram.AllowedUserIDs) != 2 || cfg.Telegram.AllowedUserIDs[0] != 123456 ||
+		cfg.Telegram.AllowedUserIDs[1] != 987654 {
+		t.Errorf("Telegram overrides = %+v", cfg.Telegram)
 	}
 	if cfg.MarketData.Enabled {
 		t.Error("MarketData.Enabled = true, ожидалось false")
@@ -315,5 +326,34 @@ func TestValidateRejectsEmptyDatabasePathAndInvalidTimeout(t *testing.T) {
 	cfg.Database.BusyTimeout = 0
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error for non-positive SQLite busy timeout")
+	}
+}
+
+
+func TestValidateRejectsTelegramWithoutAllowlist(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Telegram.BotToken = "test-token"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error when Telegram token has no allowed IDs")
+	}
+	cfg.Telegram.AllowedUserIDs = []int64{42}
+	cfg.Telegram.DailyLossLimitPercent = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error for non-positive daily loss limit")
+	}
+}
+
+func TestLoadRejectsInvalidTelegramAllowlist(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_USER_IDS", "42,not-a-number")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid Telegram allowlist to be rejected")
+	}
+	t.Setenv("TELEGRAM_ALLOWED_USER_IDS", "42,42")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected duplicate Telegram IDs to be rejected")
 	}
 }

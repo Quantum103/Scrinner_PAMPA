@@ -63,15 +63,44 @@ type connector interface {
 	Dial(ctx context.Context, url string) (wireConn, error)
 }
 
+type Observer interface {
+	OnSignal(marketstrategy.Signal)
+	OnPaperEvent(marketpaper.Event, marketpaper.AccountSnapshot)
+	OnConnectionStatus(ConnectionStatus)
+	OnMarketDataIssue(string)
+}
+
+type ConnectionStatus struct {
+	ConnectedShards int
+	TotalShards     int
+	LastError       string
+	At              time.Time
+}
+
+type ManagerStatus struct {
+	Running         bool
+	ConnectedShards int
+	TotalShards     int
+	LastError       string
+	EntryPaused     bool
+	DailyLossReached bool
+	TrackedSymbols  int
+}
+
 type Manager struct {
 	cfg       Config
 	store     *Store
-	logger    *slog.Logger
+	logger   *slog.Logger
 	connector connector
 
-	mu      sync.Mutex
-	symbols []string
-	updates chan struct{}
+	mu                sync.Mutex
+	running           bool
+	symbols           []string
+	updates           chan struct{}
+	observer          Observer
+	shardConnections  map[string]bool
+	totalShards       int
+	lastConnectionErr string
 }
 
 type wsEnvelope struct {
@@ -120,16 +149,107 @@ func NewManager(cfg Config, logger *slog.Logger) (*Manager, error) {
 		logger = slog.Default()
 	}
 	return &Manager{
-		cfg:       cfg,
-		store:     store,
-		logger:    logger,
-		connector: newGorillaConnector(),
-		updates:   make(chan struct{}, 1),
+		cfg:              cfg,
+		store:            store,
+		logger:           logger,
+		connector:        newGorillaConnector(),
+		updates:          make(chan struct{}, 1),
+		shardConnections: make(map[string]bool),
 	}, nil
 }
 
 func (m *Manager) Store() *Store {
 	return m.store
+}
+
+func (m *Manager) SetObserver(observer Observer) {
+	m.mu.Lock()
+	m.observer = observer
+	m.mu.Unlock()
+}
+
+func (m *Manager) SetEntryPaused(paused bool) {
+	m.store.SetEntryPaused(paused)
+}
+
+func (m *Manager) SetDailyLossReached(reached bool) {
+	m.store.SetDailyLossReached(reached)
+}
+
+func (m *Manager) EntryPaused() bool {
+	return m.store.EntryPaused()
+}
+
+func (m *Manager) DailyLossReached() bool {
+	return m.store.DailyLossReached()
+}
+
+func (m *Manager) Status() ManagerStatus {
+	m.mu.Lock()
+	connected := 0
+	for _, active := range m.shardConnections {
+		if active {
+			connected++
+		}
+	}
+	status := ManagerStatus{
+		Running: m.running, ConnectedShards: connected, TotalShards: m.totalShards,
+		LastError: m.lastConnectionErr, EntryPaused: m.store.EntryPaused(),
+		DailyLossReached: m.store.DailyLossReached(), TrackedSymbols: len(m.symbols),
+	}
+	m.mu.Unlock()
+	return status
+}
+
+func (m *Manager) ReportMarketDataIssue(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	m.mu.Lock()
+	observer := m.observer
+	m.mu.Unlock()
+	if observer != nil {
+		observer.OnMarketDataIssue(message)
+	}
+}
+
+func shardKey(symbols []string) string {
+	return strings.Join(symbols, ",")
+}
+
+func (m *Manager) setShardConnection(symbols []string, connected bool, err error) {
+	key := shardKey(symbols)
+	m.mu.Lock()
+	previous := m.shardConnections[key]
+	m.shardConnections[key] = connected
+	if connected {
+		m.lastConnectionErr = ""
+	}
+	if err != nil {
+		m.lastConnectionErr = err.Error()
+	}
+	count := 0
+	for _, active := range m.shardConnections {
+		if active {
+			count++
+		}
+	}
+	total := m.totalShards
+	observer := m.observer
+	changed := previous != connected
+	status := ConnectionStatus{
+		ConnectedShards: count, TotalShards: total,
+		LastError: m.lastConnectionErr, At: time.Now(),
+	}
+	m.mu.Unlock()
+	if observer != nil && changed {
+		observer.OnConnectionStatus(status)
+	} else if observer != nil && err != nil {
+		// Первое подключение тоже может завершиться ошибкой: его потеря
+		// не является переходом true -> false, но об этом нужно уведомить.
+		observer.OnMarketDataIssue("Не удалось подключиться к публичному WebSocket Bybit: " + err.Error())
+	}
 }
 
 // UpdateMarketData передаёт симулятору спецификации контракта и публичные funding-данные Bybit.
@@ -163,6 +283,15 @@ func (m *Manager) SetSymbols(symbols []string) {
 }
 
 func (m *Manager) Run(ctx context.Context) {
+	m.mu.Lock()
+	m.running = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.running = false
+		m.mu.Unlock()
+	}()
+
 	var shardCancel context.CancelFunc
 	var shardWG sync.WaitGroup
 
@@ -181,6 +310,10 @@ func (m *Manager) Run(ctx context.Context) {
 		shardCtx, cancel := context.WithCancel(ctx)
 		shardCancel = cancel
 		shards := splitSymbols(symbols, m.cfg.MaxSymbolsPerConnection)
+		m.mu.Lock()
+		m.totalShards = len(shards)
+		m.shardConnections = make(map[string]bool, len(shards))
+		m.mu.Unlock()
 		m.logger.Info("Запуск публичных WebSocket-соединений Bybit",
 			"инструментов", len(symbols),
 			"соединений", len(shards),
@@ -224,6 +357,7 @@ func (m *Manager) runShard(ctx context.Context, symbols []string) {
 		if ctx.Err() != nil {
 			return
 		}
+		m.setShardConnection(symbols, false, err)
 		m.logger.Warn("WebSocket Bybit отключён; выполняется переподключение",
 			"инструментов", len(symbols),
 			"ошибка", err,
@@ -261,6 +395,7 @@ func (m *Manager) connectAndServe(ctx context.Context, symbols []string) error {
 		}
 	}
 	m.store.StartSession(symbols)
+	m.setShardConnection(symbols, true, nil)
 	m.logger.Info("Публичный WebSocket Bybit подключён; подписки отправлены",
 		"инструментов", len(symbols),
 		"тем_подписки", len(symbols)*2,
@@ -376,7 +511,9 @@ func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
 			return fmt.Errorf("символ в topic %q не совпадает с данными %q", envelope.Topic, message.Data.Symbol)
 		}
 		if err := m.store.ApplyOrderBook(payload, receivedAt); err != nil {
-			return fmt.Errorf("обновить стакан %s: %w", message.Data.Symbol, err)
+			wrapped := fmt.Errorf("обновить стакан %s: %w", message.Data.Symbol, err)
+			m.ReportMarketDataIssue(wrapped.Error())
+			return wrapped
 		}
 		m.logSignals()
 	case strings.HasPrefix(envelope.Topic, "publicTrade."):
@@ -390,7 +527,9 @@ func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
 			}
 		}
 		if err := m.store.ApplyTrades(payload, receivedAt); err != nil {
-			return fmt.Errorf("сохранить сделки: %w", err)
+			wrapped := fmt.Errorf("сохранить сделки: %w", err)
+			m.ReportMarketDataIssue(wrapped.Error())
+			return wrapped
 		}
 		m.logSignals()
 	}
@@ -491,6 +630,12 @@ func waitContext(ctx context.Context, duration time.Duration) error {
 
 func (m *Manager) logSignals() {
 	for _, signal := range m.store.DrainSignals() {
+		m.mu.Lock()
+		observer := m.observer
+		m.mu.Unlock()
+		if observer != nil {
+			observer.OnSignal(signal)
+		}
 		m.logger.Info("Сформирован сигнал LONG",
 			"symbol", signal.Symbol,
 			"price", signal.Price,
@@ -519,10 +664,19 @@ func (m *Manager) logPaperEvents() {
 			"remaining_quantity", event.RemainingQuantity,
 		}
 		switch event.Type {
-		case "entry_rejected", "close_rejected", "funding_data_unavailable", "funding_skipped", "funding_backlog":
+		case "entry_rejected", "close_rejected", "funding_data_unavailable", "funding_skipped", "funding_backlog", "persistence_error":
 			m.logger.Warn("Событие Paper Trading", attributes...)
 		default:
 			m.logger.Info("Событие Paper Trading", attributes...)
+		}
+		m.mu.Lock()
+		observer := m.observer
+		m.mu.Unlock()
+		if observer != nil {
+			observer.OnPaperEvent(event, m.PaperSnapshot())
+		}
+		if event.Type == "funding_data_unavailable" || event.Type == "funding_skipped" || event.Type == "persistence_error" {
+			m.ReportMarketDataIssue(event.Reason)
 		}
 	}
 }

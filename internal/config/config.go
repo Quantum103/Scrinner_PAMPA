@@ -88,8 +88,9 @@ type CostsConfig struct {
 }
 
 type TelegramConfig struct {
-	BotToken string
-	ChatID   string
+	BotToken              string
+	AllowedUserIDs        []int64
+	DailyLossLimitPercent float64
 }
 
 func Load() (Config, error) {
@@ -148,7 +149,9 @@ func Load() (Config, error) {
 			FeeRate:     0.00055,
 			SlippageBPS: 5,
 		},
-		Telegram: TelegramConfig{},
+		Telegram: TelegramConfig{
+			DailyLossLimitPercent: 5,
+		},
 	}
 
 	var err error
@@ -370,7 +373,10 @@ func Load() (Config, error) {
 	if cfg.Telegram.BotToken, err = stringValue("TELEGRAM_BOT_TOKEN", ""); err != nil {
 		return Config{}, err
 	}
-	if cfg.Telegram.ChatID, err = stringValue("TELEGRAM_CHAT_ID", ""); err != nil {
+	if cfg.Telegram.AllowedUserIDs, err = int64ListValue("TELEGRAM_ALLOWED_USER_IDS", nil); err != nil {
+		return Config{}, err
+	}
+	if cfg.Telegram.DailyLossLimitPercent, err = floatValue("TELEGRAM_DAILY_LOSS_LIMIT_PERCENT", cfg.Telegram.DailyLossLimitPercent); err != nil {
 		return Config{}, err
 	}
 
@@ -429,6 +435,25 @@ func (c Config) Validate() error {
 	}
 	if c.Database.BusyTimeout <= 0 {
 		return fmt.Errorf("APP_DB_BUSY_TIMEOUT должен быть положительным")
+	}
+	if strings.TrimSpace(c.Telegram.BotToken) == "" && len(c.Telegram.AllowedUserIDs) > 0 {
+		return fmt.Errorf("TELEGRAM_BOT_TOKEN требуется при заданном TELEGRAM_ALLOWED_USER_IDS")
+	}
+	if strings.TrimSpace(c.Telegram.BotToken) != "" && len(c.Telegram.AllowedUserIDs) == 0 {
+		return fmt.Errorf("при включённом Telegram укажи хотя бы один ID в TELEGRAM_ALLOWED_USER_IDS")
+	}
+	if c.Telegram.DailyLossLimitPercent <= 0 || c.Telegram.DailyLossLimitPercent > 100 {
+		return fmt.Errorf("TELEGRAM_DAILY_LOSS_LIMIT_PERCENT должен быть в диапазоне (0, 100]")
+	}
+	seenTelegramIDs := make(map[int64]struct{}, len(c.Telegram.AllowedUserIDs))
+	for _, id := range c.Telegram.AllowedUserIDs {
+		if id <= 0 {
+			return fmt.Errorf("TELEGRAM_ALLOWED_USER_IDS должен содержать только положительные числовые ID")
+		}
+		if _, exists := seenTelegramIDs[id]; exists {
+			return fmt.Errorf("TELEGRAM_ALLOWED_USER_IDS содержит повторяющийся ID %d", id)
+		}
+		seenTelegramIDs[id] = struct{}{}
 	}
 	if err := c.PaperEngineConfig().Validate(); err != nil {
 		return fmt.Errorf("PAPER TRADING: %w", err)
@@ -578,4 +603,31 @@ func (c Config) PaperEngineConfig() marketpaper.Config {
 		SlippageBPS: c.Costs.SlippageBPS,
 		MaxBookAge: c.WebSocket.MaxDataAge,
 	}
+}
+
+func int64ListValue(key string, fallback []int64) ([]int64, error) {
+	raw, exists := os.LookupEnv(key)
+	if !exists {
+		return append([]int64(nil), fallback...), nil
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]int64, 0, len(parts))
+	seen := make(map[int64]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		value, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || value <= 0 {
+			return nil, fmt.Errorf("%s должен содержать положительные числовые Telegram ID через запятую; некорректное значение %q", key, part)
+		}
+		if _, exists := seen[value]; exists {
+			return nil, fmt.Errorf("%s содержит повторяющийся ID %d", key, value)
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	return values, nil
 }

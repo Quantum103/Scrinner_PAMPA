@@ -87,6 +87,8 @@ type Store struct {
 	strategy         *marketstrategy.Engine
 	strategyInterval time.Duration
 	pendingSignals   []marketstrategy.Signal
+	entryPaused      bool
+	dailyLossReached bool
 	paper            *marketpaper.Engine
 }
 
@@ -339,6 +341,9 @@ func (s *Store) evaluateStrategy(symbol string, now time.Time) {
 	analysisSnapshot := s.analyzer.Snapshot(symbol, now, state.connected, analysisBook(bookSnapshot))
 	s.paper.UpdateOrderFlow(symbol, analysisSnapshot, paperBook(bookSnapshot, bookSnapshot.Fresh), now)
 
+	if s.entryPaused || s.dailyLossReached {
+		return // Position Manager выше продолжает работать независимо от паузы входов.
+	}
 	if !state.lastStrategyEvaluationAt.IsZero() && now.Sub(state.lastStrategyEvaluationAt) < s.strategyInterval {
 		return
 	}
@@ -372,6 +377,52 @@ func (s *Store) UpdateMarketData(items []bybit.MarketData, at time.Time) {
 
 func (s *Store) PaperSnapshot(now time.Time) marketpaper.AccountSnapshot {
 	return s.paper.Snapshot(now)
+}
+
+// SetEntryPaused управляет только поиском новых входов. Paper Position Manager
+// продолжает обрабатывать каждый свежий стакан и Order Flow.
+func (s *Store) SetEntryPaused(paused bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entryPaused == paused {
+		return
+	}
+	s.entryPaused = paused
+	reason := "поиск новых входов возобновлён"
+	if paused {
+		reason = "поиск новых входов приостановлен; сопровождение открытой позиции продолжает работать"
+	}
+	for symbol := range s.states {
+		s.strategy.ResetProgress(symbol, reason)
+	}
+}
+
+func (s *Store) SetDailyLossReached(reached bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dailyLossReached == reached {
+		return
+	}
+	s.dailyLossReached = reached
+	reason := "дневной лимит убытка сброшен; новые входы разрешены"
+	if reached {
+		reason = "достигнут дневной лимит убытка; новые входы заблокированы, открытая позиция продолжает сопровождаться"
+	}
+	for symbol := range s.states {
+		s.strategy.ResetProgress(symbol, reason)
+	}
+}
+
+func (s *Store) EntryPaused() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.entryPaused || s.dailyLossReached
+}
+
+func (s *Store) DailyLossReached() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dailyLossReached
 }
 
 func (s *Store) PaperStatistics(now time.Time) marketpaper.PaperStatistics {

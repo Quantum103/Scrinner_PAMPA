@@ -669,3 +669,30 @@ func flowBook(at time.Time, bid float64) Book {
 		Asks: []Level{{Price: bid + 0.1, Quantity: 100}},
 	}
 }
+
+
+func TestTrailingStopRaiseEmitsNotificationEvent(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	engine := testEngine(t, testConfig(), now)
+	openTestPosition(t, engine, now)
+	engine.DrainEvents()
+
+	rally := testBook(now.Add(time.Second))
+	rally.Bids = []Level{{Price: 105, Quantity: 100}}
+	rally.Asks = []Level{{Price: 105.1, Quantity: 100}}
+	engine.UpdateBook("TESTUSDT", rally, now.Add(time.Second))
+
+	found := false
+	for _, event := range engine.DrainEvents() {
+		if event.Type != "trailing_stop_updated" {
+			continue
+		}
+		found = true
+		if event.Price <= event.PreviousPrice || event.Symbol != "TESTUSDT" {
+			t.Fatalf("invalid Trailing Stop notification event: %+v", event)
+		}
+	}
+	if !found {
+		t.Fatal("Trailing Stop raise did not emit a notification event")
+	}
+}
