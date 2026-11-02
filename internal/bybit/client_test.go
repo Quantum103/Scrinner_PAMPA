@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -260,5 +261,39 @@ func TestGetRetriesHTTPTooManyRequests(t *testing.T) {
 	}
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("выполнено %d запросов, ожидалось 2", got)
+	}
+}
+
+
+func TestForbiddenResponseIncludesServerDetailsWithoutRetry(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("CF-Ray", "test-ray-id")
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"retCode":10009,"retMsg":"Service Restricted from this region"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	client.httpClient = server.Client()
+	var response apiResponse
+	err := client.get(context.Background(), "/v5/market/time", nil, &response)
+	if err == nil {
+		t.Fatal("ожидалась ошибка HTTP 403")
+	}
+	for _, expected := range []string{
+		"HTTP 403",
+		"retCode=10009",
+		"Service Restricted from this region",
+		"cf-ray=test-ray-id",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("ошибка %q не содержит %q", err, expected)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("число запросов = %d, ожидался один запрос без повтора", got)
 	}
 }
