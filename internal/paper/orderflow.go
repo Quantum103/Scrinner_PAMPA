@@ -16,7 +16,13 @@ func (e *Engine) UpdateOrderFlow(symbol string, snapshot marketanalysis.Snapshot
 	defer e.mu.Unlock()
 
 	position := e.positions[symbol]
-	if position == nil || !e.cfg.OrderFlowExitEnabled || position.ExitReason != "" {
+	if position == nil {
+		if e.storageErr != nil {
+			_ = e.persistLocked(now)
+		}
+		return nil
+	}
+	if !e.cfg.OrderFlowExitEnabled || position.ExitReason != "" {
 		return nil
 	}
 
