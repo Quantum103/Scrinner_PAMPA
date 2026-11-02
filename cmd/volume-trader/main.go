@@ -94,6 +94,24 @@ func main() {
 	if cfg.MarketData.Enabled {
 		candleStore := market.NewCandleStore(cfg.MarketData.KlineMaxDataAge)
 		marketMonitor := market.NewMonitor(candleStore)
+		ranker, err := market.NewRanker(marketMonitor.Candles(), market.RankerConfig{
+			UpdateInterval: cfg.Ranking.UpdateInterval,
+			AccelerationLeaders: cfg.Ranking.AccelerationLeaders,
+		})
+		if err != nil {
+			logger.Error("Не удалось создать рейтинг рынка", "ошибка", err)
+			os.Exit(1)
+		}
+		rankingDone := make(chan struct{})
+		go func() {
+			defer close(rankingDone)
+			ranker.Run(ctx, marketMonitor)
+		}()
+		logger.Info("Рейтинг рынка включён",
+			"кандидатов_по_обороту", market.CandidateCount,
+			"лидеров_ускорения", cfg.Ranking.AccelerationLeaders,
+			"интервал_пересчёта", cfg.Ranking.UpdateInterval,
+		)
 		klineManager, err := market.NewKlineManager(client, cfg.Bybit.PublicWSURL, market.KlineConfig{
 			HistoryLimit: cfg.MarketData.KlineHistoryLimit,
 			HistoryWorkers: cfg.MarketData.KlineHistoryWorkers,
@@ -125,6 +143,7 @@ func main() {
 		)
 		poller.Run(ctx)
 		<-klineDone
+		<-rankingDone
 	} else {
 		logger.Info("Получение рыночных данных отключено; Telegram управление доступно")
 		<-ctx.Done()

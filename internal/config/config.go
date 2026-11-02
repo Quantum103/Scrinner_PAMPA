@@ -19,6 +19,7 @@ type Config struct {
 	LogLevel   string
 	Bybit      BybitConfig
 	MarketData MarketDataConfig
+	Ranking    RankingConfig
 	WebSocket  WebSocketConfig
 	Analysis      marketanalysis.Config
 	Strategy      StrategyConfig
@@ -47,6 +48,11 @@ type MarketDataConfig struct {
 	KlineMaxDataAge                 time.Duration
 	KlineReconnectMin               time.Duration
 	KlineReconnectMax               time.Duration
+}
+
+type RankingConfig struct {
+	UpdateInterval      time.Duration
+	AccelerationLeaders int
 }
 
 type WebSocketConfig struct {
@@ -126,6 +132,10 @@ func Load() (Config, error) {
 			KlineMaxDataAge:              90 * time.Second,
 			KlineReconnectMin:            time.Second,
 			KlineReconnectMax:            30 * time.Second,
+		},
+		Ranking: RankingConfig{
+			UpdateInterval: time.Second,
+			AccelerationLeaders: 10,
 		},
 		Analysis:      marketanalysis.DefaultConfig(),
 		EntryStrategy: marketstrategy.DefaultConfig(),
@@ -219,6 +229,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.MarketData.KlineReconnectMax, err = durationValue("KLINE_RECONNECT_MAX", cfg.MarketData.KlineReconnectMax); err != nil {
+		return Config{}, err
+	}
+	if cfg.Ranking.UpdateInterval, err = durationValue("RANKING_UPDATE_INTERVAL", cfg.Ranking.UpdateInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.Ranking.AccelerationLeaders, err = intValue("RANKING_ACCELERATION_LEADERS", cfg.Ranking.AccelerationLeaders); err != nil {
 		return Config{}, err
 	}
 	if cfg.WebSocket.OrderbookDepth, err = intValue("WS_ORDERBOOK_DEPTH", cfg.WebSocket.OrderbookDepth); err != nil {
@@ -474,6 +490,12 @@ func (c Config) Validate() error {
 	}
 	if c.MarketData.KlineReconnectMin <= 0 || c.MarketData.KlineReconnectMax < c.MarketData.KlineReconnectMin {
 		return fmt.Errorf("KLINE_RECONNECT_MIN/MAX заданы некорректно")
+	}
+	if c.Ranking.UpdateInterval < 100*time.Millisecond || c.Ranking.UpdateInterval > time.Minute {
+		return fmt.Errorf("RANKING_UPDATE_INTERVAL должен быть в диапазоне 100ms..1m")
+	}
+	if c.Ranking.AccelerationLeaders < 5 || c.Ranking.AccelerationLeaders > 10 {
+		return fmt.Errorf("RANKING_ACCELERATION_LEADERS должен быть в диапазоне 5..10")
 	}
 	if c.WebSocket.OrderbookDepth != 50 {
 		return fmt.Errorf("WS_ORDERBOOK_DEPTH должен быть равен 50 для выбранного потока стакана")

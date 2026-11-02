@@ -13,12 +13,13 @@ type MonitorSnapshot struct {
 	Items     []bybit.MarketData
 }
 
-// Monitor хранит REST-состояние рынка независимо от подробных потоков сделок и стакана.
-// На этом этапе компонент только принимает и публикует снимок; рейтинг появится позже.
+// Monitor хранит полный REST-снимок рынка, рейтинг и CandleStore независимо от
+// подробных потоков publicTrade/orderbook.
 type Monitor struct {
 	mu         sync.RWMutex
 	updatedAt  time.Time
 	items      []bybit.MarketData
+	ranking    RankingSnapshot
 	candleData *CandleStore
 }
 
@@ -53,4 +54,19 @@ func (m *Monitor) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.items)
+}
+
+// UpdateRanking сохраняет последний расчёт двух независимых рейтингов.
+func (m *Monitor) UpdateRanking(snapshot RankingSnapshot) {
+	copySnapshot := cloneRankingSnapshot(snapshot)
+	m.mu.Lock()
+	m.ranking = copySnapshot
+	m.mu.Unlock()
+}
+
+// Ranking возвращает отдельную копию рейтинга, безопасную для чтения другими компонентами.
+func (m *Monitor) Ranking() RankingSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cloneRankingSnapshot(m.ranking)
 }

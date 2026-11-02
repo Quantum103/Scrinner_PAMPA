@@ -34,6 +34,9 @@ func TestLoadDefaults(t *testing.T) {
 			t.Errorf("список исключений по умолчанию не содержит %s: %v", required, cfg.MarketData.ExcludedSymbols)
 		}
 	}
+	if cfg.Ranking.UpdateInterval != time.Second || cfg.Ranking.AccelerationLeaders != 10 {
+		t.Errorf("Ranking defaults не соответствуют 1s / 10 лидерам: %+v", cfg.Ranking)
+	}
 	if cfg.Analysis.RVOLInterval != time.Minute || cfg.Analysis.RVOLLookbackIntervals != 20 {
 		t.Errorf("RVOL defaults = %s / %d, want 1m / 20", cfg.Analysis.RVOLInterval, cfg.Analysis.RVOLLookbackIntervals)
 	}
@@ -65,6 +68,8 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	t.Setenv("KLINE_MAX_DATA_AGE", "75s")
 	t.Setenv("KLINE_RECONNECT_MIN", "2s")
 	t.Setenv("KLINE_RECONNECT_MAX", "45s")
+	t.Setenv("RANKING_UPDATE_INTERVAL", "2s")
+	t.Setenv("RANKING_ACCELERATION_LEADERS", "7")
 	t.Setenv("WS_MAX_DATA_AGE", "8s")
 	t.Setenv("APP_DB_PATH", t.TempDir()+"/paper-test.db")
 	t.Setenv("APP_DB_BUSY_TIMEOUT", "8s")
@@ -93,6 +98,9 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	}
 	if cfg.MarketData.InstrumentRefreshInterval != 5*time.Minute {
 		t.Errorf("InstrumentRefreshInterval = %s", cfg.MarketData.InstrumentRefreshInterval)
+	}
+	if cfg.Ranking.UpdateInterval != 2*time.Second || cfg.Ranking.AccelerationLeaders != 7 {
+		t.Errorf("Ranking overrides не загружены: %+v", cfg.Ranking)
 	}
 	if cfg.MarketData.KlineHistoryLimit != 25 || cfg.MarketData.KlineHistoryWorkers != 4 ||
 		cfg.MarketData.KlineMaxSymbolsPerConnection != 80 || cfg.MarketData.KlineMaxArgsPerSubscribe != 8 ||
