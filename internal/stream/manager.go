@@ -363,7 +363,7 @@ func (m *Manager) Run(ctx context.Context) {
 			if _, retained := assignments[id]; retained {
 				continue
 			}
-			previous := runtime.snapshotSymbols()
+			previous := runtime.snapshotActiveSymbols()
 			m.setShardConnection(previous, false, nil)
 			runtime.cancel()
 			delete(runtimes, id)
@@ -388,7 +388,7 @@ func (m *Manager) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			for _, runtime := range runtimes {
-				previous := runtime.snapshotSymbols()
+				previous := runtime.snapshotActiveSymbols()
 				m.setShardConnection(previous, false, nil)
 				runtime.cancel()
 			}
@@ -409,10 +409,11 @@ func (m *Manager) Run(ctx context.Context) {
 
 // managedShard сохраняет состав символов одного соединения, не разрывая его при изменении списка.
 type managedShard struct {
-	mu      sync.RWMutex
-	symbols []string
-	updates chan struct{}
-	cancel  context.CancelFunc
+	mu            sync.RWMutex
+	symbols       []string
+	activeSymbols []string
+	updates       chan struct{}
+	cancel        context.CancelFunc
 }
 
 func newManagedShard(symbols []string, cancel context.CancelFunc) *managedShard {
@@ -442,6 +443,18 @@ func (s *managedShard) snapshotSymbols() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]string(nil), s.symbols...)
+}
+
+func (s *managedShard) setActiveSymbols(symbols []string) {
+	s.mu.Lock()
+	s.activeSymbols = normalizeSymbols(symbols)
+	s.mu.Unlock()
+}
+
+func (s *managedShard) snapshotActiveSymbols() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.activeSymbols...)
 }
 
 // stableShardAssignments по возможности сохраняет старое размещение символов.
@@ -518,12 +531,12 @@ func (m *Manager) runManagedShard(ctx context.Context, runtime *managedShard) {
 			return
 		}
 		err := m.connectAndServeDynamic(ctx, runtime)
-		symbols := runtime.snapshotSymbols()
-		m.store.MarkDisconnected(symbols)
+		activeSymbols := runtime.snapshotActiveSymbols()
+		m.store.MarkDisconnected(activeSymbols)
 		if ctx.Err() != nil {
 			return
 		}
-		m.setShardConnection(symbols, false, err)
+		m.setShardConnection(activeSymbols, false, err)
 		m.logger.Warn("WebSocket Bybit отключён; выполняется переподключение",
 			"инструментов", len(symbols),
 			"ошибка", err,
@@ -567,6 +580,7 @@ func (m *Manager) connectAndServeDynamic(ctx context.Context, runtime *managedSh
 		}
 	}
 	m.store.StartSession(symbols)
+	runtime.setActiveSymbols(symbols)
 	m.setShardConnection(symbols, true, nil)
 	m.logger.Info("Публичный WebSocket Bybit подключён; подписки отправлены",
 		"инструментов", len(symbols),
@@ -642,6 +656,7 @@ func (m *Manager) connectAndServeDynamic(ctx context.Context, runtime *managedSh
 				m.store.StartSession(added)
 			}
 			m.replaceShardConnection(symbols, desired)
+			runtime.setActiveSymbols(desired)
 			m.logger.Info("Обновлены темы публичного WebSocket без переподключения",
 				"добавлено_символов", len(added),
 				"удалено_символов", len(removed),

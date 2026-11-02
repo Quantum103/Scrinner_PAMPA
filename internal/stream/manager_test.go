@@ -274,7 +274,8 @@ func TestDynamicSubscriptionsUpdateWithoutDroppingConnection(t *testing.T) {
 	runtime.setSymbols([]string{"ETHUSDT"})
 	waitFor(t, time.Second, func() bool {
 		return hasOperationForTopic(conn.writeSnapshot(), "unsubscribe", "publicTrade.BTCUSDT") &&
-			hasOperationForTopic(conn.writeSnapshot(), "unsubscribe", "orderbook.50.BTCUSDT")
+			hasOperationForTopic(conn.writeSnapshot(), "unsubscribe", "orderbook.50.BTCUSDT") &&
+			equalStrings(runtime.snapshotActiveSymbols(), []string{"ETHUSDT"})
 	})
 
 	cancel()
