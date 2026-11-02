@@ -37,6 +37,7 @@ type Bot struct {
 	logger    *slog.Logger
 	api       *apiClient
 	allowed   map[int64]struct{}
+	notifications chan string
 
 	mu                 sync.Mutex
 	lastMarketIssues   map[string]time.Time
@@ -81,6 +82,7 @@ func NewBot(cfg Config, manager *stream.Manager, logger *slog.Logger) (*Bot, err
 	return &Bot{
 		cfg: cfg, manager: manager, logger: logger, allowed: allowed,
 		api: &apiClient{token: cfg.Token, baseURL: baseURL, http: defaultHTTPClient()},
+		notifications: make(chan string, 256),
 		lastMarketIssues: make(map[string]time.Time),
 	}, nil
 }
@@ -88,6 +90,7 @@ func NewBot(cfg Config, manager *stream.Manager, logger *slog.Logger) (*Bot, err
 // Run запускает уведомления, монитор дневного лимита и Telegram long polling.
 func (b *Bot) Run(ctx context.Context) {
 	b.manager.SetObserver(b)
+	go b.notificationLoop(ctx)
 	b.notifyAll(ctx, "Volume Trader запущен. Режим: Paper Trading. Используются только публичные рыночные данные Bybit; реальные ордера не отправляются.")
 	go b.monitorDailyLoss(ctx)
 
@@ -135,7 +138,6 @@ func (b *Bot) processUpdate(ctx context.Context, update Update) {
 	}
 	// Управление разрешено только в личных сообщениях, чтобы исключить команды из групп.
 	if message.Chat.Type != "private" || message.Chat.ID != userID {
-		b.sendTo(ctx, message.Chat.ID, "Управление Volume Trader разрешено только в личном чате с ботом.")
 		return
 	}
 	fields := strings.Fields(strings.TrimSpace(message.Text))
@@ -425,9 +427,26 @@ func dailyStartingEquity(history []marketpaper.EquityPoint, now time.Time) (floa
 	return first.Equity, true
 }
 
-func (b *Bot) notifyAll(ctx context.Context, message string) {
-	for id := range b.allowed {
-		b.sendTo(ctx, id, message)
+// notifyAll вызывается из WebSocket observer callbacks: постановка уведомления
+// в очередь не блокирует обработку рыночных данных сетевым запросом Telegram.
+func (b *Bot) notifyAll(_ context.Context, message string) {
+	select {
+	case b.notifications <- message:
+	default:
+		b.logger.Warn("Очередь Telegram уведомлений заполнена; уведомление пропущено")
+	}
+}
+
+func (b *Bot) notificationLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case message := <-b.notifications:
+			for id := range b.allowed {
+				b.sendTo(ctx, id, message)
+			}
+		}
 	}
 }
 
