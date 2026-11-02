@@ -685,7 +685,7 @@ func (e *Engine) OpenLong(signal strategy.Signal, book Book, now time.Time) Even
 		Type: eventType, Symbol: signal.Symbol, At: now, Direction: "LONG", Reason: reason,
 		Price: fill.Price, Quantity: fill.Quantity, RequestedQuantity: requestedQty,
 		Notional: notional, Margin: margin, Leverage: e.cfg.MaxLeverage,
-		Fee: entryFee, RiskUSDT: risk, RiskPercent: riskPercent,
+		Fee: entryFee, SlippageUSDT: fill.SlippageUSDT, RiskUSDT: risk, RiskPercent: riskPercent,
 		RemainingQuantity: position.RemainingQuantity,
 	}
 	e.addEvent(event)
