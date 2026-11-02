@@ -127,7 +127,11 @@ func (b *orderBook) apply(message orderBookMessage, depth int, maxAge time.Durat
 		if !b.valid {
 			return ErrSnapshotRequired
 		}
-		if receivedAt.Before(b.receivedAt) || receivedAt.Sub(b.receivedAt) > maxAge {
+		// Для Level 50 Bybit отправляет delta только при изменении стакана.
+		// Длительная пауза сама по себе не означает потерю обновлений:
+		// неизменившиеся уровни остаются актуальными относительно следующей delta.
+		// Актуальность для торговой логики отдельно проверяется через receivedAt/maxAge.
+		if receivedAt.Before(b.receivedAt) {
 			b.invalidate()
 			return ErrSnapshotRequired
 		}
