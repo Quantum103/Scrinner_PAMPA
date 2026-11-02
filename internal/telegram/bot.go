@@ -460,11 +460,20 @@ func (b *Bot) sendTo(ctx context.Context, chatID int64, message string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	message = truncateRunes(message, 3900)
 	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := b.api.sendMessage(requestCtx, chatID, message); err != nil {
 		b.logger.Warn("Не удалось отправить Telegram сообщение", "telegram_id", chatID, "ошибка", err)
 	}
+}
+
+func truncateRunes(value string, maxRunes int) string {
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes-1]) + "…"
 }
 
 func waitContext(ctx context.Context, duration time.Duration) error {
