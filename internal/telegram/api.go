@@ -35,12 +35,12 @@ func (c *apiClient) call(ctx context.Context, method string, payload any, output
 	endpoint := strings.TrimRight(c.baseURL, "/") + "/bot" + c.token + "/" + method
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("создать запрос Telegram %s: %w", method, err)
+		return fmt.Errorf("создать запрос Telegram %s: %s", method, c.redact(err.Error()))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.http.Do(request)
 	if err != nil {
-		return fmt.Errorf("запрос Telegram %s: %w", method, err)
+		return fmt.Errorf("запрос Telegram %s: %s", method, c.redact(err.Error()))
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
@@ -59,7 +59,7 @@ func (c *apiClient) call(ctx context.Context, method string, payload any, output
 		if description == "" {
 			description = "неизвестная ошибка API"
 		}
-		return fmt.Errorf("Telegram API %s: %s", method, description)
+		return fmt.Errorf("Telegram API %s: %s", method, c.redact(description))
 	}
 	if output != nil && len(envelope.Result) > 0 {
 		if err := json.Unmarshal(envelope.Result, output); err != nil {
@@ -102,6 +102,13 @@ type User struct {
 type Chat struct {
 	ID int64 `json:"id"`
 	Type string `json:"type"`
+}
+
+func (c *apiClient) redact(value string) string {
+	if c.token == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, c.token, "[REDACTED]")
 }
 
 func defaultHTTPClient() *http.Client {
