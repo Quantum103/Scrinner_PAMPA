@@ -197,7 +197,7 @@ func TestPaperStatisticsAndMaximumDrawdown(t *testing.T) {
 		{At: start.Add(2 * time.Second), Equity: 990, Balance: 990},
 		{At: start.Add(3 * time.Second), Equity: 1050, Balance: 1050},
 	}
-	stats := calculateStatistics(trades, equity, 1.8, -0.15)
+	stats := calculateStatistics(trades, nil, equity, 1.8, -0.15)
 	if stats.Mode != "Paper Trading" || stats.TradeCount != 2 ||
 		stats.ProfitableTrades != 1 || stats.LosingTrades != 1 ||
 		math.Abs(stats.WinRatePercent-50) > 1e-9 || math.Abs(stats.NetPnL-10) > 1e-9 {
@@ -223,7 +223,7 @@ func TestPaperStatisticsAndMaximumDrawdown(t *testing.T) {
 }
 
 func TestProfitFactorIsExplicitlyInfiniteWithoutLosses(t *testing.T) {
-	stats := calculateStatistics([]Position{{RealizedPnL: 1}}, []EquityPoint{{Equity: 10}}, 0, 0)
+	stats := calculateStatistics([]Position{{RealizedPnL: 1}}, nil, []EquityPoint{{Equity: 10}}, 0, 0)
 	if !stats.InfiniteProfitFactor || stats.ProfitFactor != nil {
 		t.Fatalf("Profit Factor without losing trades must be marked infinite: %+v", stats)
 	}
