@@ -2,7 +2,7 @@ package paper
 
 import "math"
 
-func calculateStatistics(trades []Position, equity []EquityPoint, totalFees, netFunding float64) PaperStatistics {
+func calculateStatistics(trades, openPositions []Position, equity []EquityPoint, totalFees, netFunding float64) PaperStatistics {
 	stats := PaperStatistics{
 		Mode: "Paper Trading",
 		TradeCount: len(trades),
@@ -13,6 +13,9 @@ func calculateStatistics(trades []Position, equity []EquityPoint, totalFees, net
 	}
 	var grossProfit, grossLoss, profitSum, lossSum, rrSum float64
 	var rrCount int
+	for _, position := range openPositions {
+		stats.TotalSlippageUSDT += position.EntrySlippageUSDT + position.ExitSlippageUSDT
+	}
 	for _, trade := range trades {
 		pnl := trade.RealizedPnL
 		stats.NetPnL += pnl
