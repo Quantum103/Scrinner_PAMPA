@@ -117,7 +117,7 @@ func TestFetchLinearTickersParsesMarketFields(t *testing.T) {
 		if r.URL.Path != "/v5/market/tickers" || r.URL.Query().Get("category") != "linear" {
 			t.Errorf("неверный запрос тикеров: %s %s", r.Method, r.URL.String())
 		}
-		fmt.Fprintf(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"symbol":"BTCUSDT","lastPrice":"68000.1","markPrice":"68000.15","bid1Price":"68000.0","ask1Price":"68000.2","volume24h":"12345.6","turnover24h":"839000000","price24hPcnt":"0.0125","fundingRate":"0.0001","nextFundingTime":"%d"}]}}`, nextFundingMillis)
+		fmt.Fprintf(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"symbol":"BTCUSDT","lastPrice":"68000.1","markPrice":"68000.15","bid1Price":"68000.0","bid1Size":"12.5","ask1Price":"68000.2","ask1Size":"8.75","volume24h":"12345.6","turnover24h":"839000000","price24hPcnt":"0.0125","openInterest":"7654321","openInterestValue":"520000000","fundingRate":"0.0001","nextFundingTime":"%d"}]}}`, nextFundingMillis)
 	}))
 	defer server.Close()
 
@@ -132,14 +132,18 @@ func TestFetchLinearTickersParsesMarketFields(t *testing.T) {
 	}
 
 	ticker := tickers[0]
-	if ticker.LastPrice != "68000.1" || ticker.MarkPrice != "68000.15" || ticker.BestBidPrice != "68000.0" || ticker.BestAskPrice != "68000.2" {
-		t.Errorf("цены не перенесены: %+v", ticker)
+	if ticker.LastPrice != "68000.1" || ticker.MarkPrice != "68000.15" ||
+		ticker.Bid1Price != "68000.0" || ticker.Bid1Size != "12.5" ||
+		ticker.Ask1Price != "68000.2" || ticker.Ask1Size != "8.75" ||
+		ticker.BestBidPrice != "68000.0" || ticker.BestAskPrice != "68000.2" {
+		t.Errorf("цены или размеры best bid/ask не перенесены: %+v", ticker)
 	}
 	if ticker.Volume24h != "12345.6" || ticker.Turnover24h != "839000000" {
 		t.Errorf("объём и оборот не перенесены: %+v", ticker)
 	}
-	if ticker.Price24hPcnt != "0.0125" || ticker.FundingRate != "0.0001" {
-		t.Errorf("изменение цены или funding не перенесены: %+v", ticker)
+	if ticker.Price24hPcnt != "0.0125" || ticker.OpenInterest != "7654321" ||
+		ticker.OpenInterestValue != "520000000" || ticker.FundingRate != "0.0001" {
+		t.Errorf("изменение цены, Open Interest или funding не перенесены: %+v", ticker)
 	}
 	if !ticker.NextFundingTime.Equal(time.UnixMilli(nextFundingMillis).UTC()) {
 		t.Errorf("NextFundingTime = %s, ожидалось %s", ticker.NextFundingTime, time.UnixMilli(nextFundingMillis).UTC())
@@ -295,5 +299,34 @@ func TestForbiddenResponseIncludesServerDetailsWithoutRetry(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("число запросов = %d, ожидался один запрос без повтора", got)
+	}
+}
+
+
+func TestJoinMarketDataDoesNotTruncateLargeInstrumentLists(t *testing.T) {
+	instruments := make([]Instrument, 650)
+	tickers := make([]Ticker, 650)
+	for i := 0; i < 650; i++ {
+		symbol := fmt.Sprintf("COIN%03dUSDT", i)
+		instruments[i] = Instrument{Symbol: symbol, MinOrderQty: "1"}
+		tickers[i] = Ticker{Symbol: symbol, LastPrice: fmt.Sprintf("%d", i+1)}
+	}
+	joined := JoinMarketData(instruments, tickers)
+	if len(joined) != 650 { t.Fatalf("объединено %d инструментов, ожидалось 650", len(joined)) }
+	if joined[0].Instrument.Symbol != "COIN000USDT" || joined[649].Instrument.Symbol != "COIN649USDT" {
+		t.Fatalf("порядок или конец списка потерян: first=%s last=%s", joined[0].Instrument.Symbol, joined[649].Instrument.Symbol)
+	}
+	if joined[649].Instrument.MinOrderQty != "1" || joined[649].Ticker.LastPrice != "650" {
+		t.Fatalf("спецификация или тикер последнего инструмента потеряны: %+v", joined[649])
+	}
+}
+
+func TestJoinMarketDataSkipsOnlySymbolsWithoutTicker(t *testing.T) {
+	joined := JoinMarketData(
+		[]Instrument{{Symbol: "AAAUSDT"}, {Symbol: "BBBUSDT"}},
+		[]Ticker{{Symbol: "BBBUSDT", LastPrice: "2"}},
+	)
+	if len(joined) != 1 || joined[0].Instrument.Symbol != "BBBUSDT" {
+		t.Fatalf("неожиданный результат объединения: %+v", joined)
 	}
 }

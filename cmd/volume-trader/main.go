@@ -92,12 +92,14 @@ func main() {
 	}()
 
 	if cfg.MarketData.Enabled {
+		marketMonitor := market.NewMonitor()
 		poller := market.NewPoller(
 			client,
 			cfg.MarketData.UpdateInterval,
 			cfg.MarketData.InstrumentRefreshInterval,
-			cfg.MarketData.MaxTrackedSymbols,
+			cfg.MarketData.ExcludedSymbols,
 			wsManager,
+			marketMonitor,
 			logger,
 		)
 		poller.Run(ctx)

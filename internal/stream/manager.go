@@ -293,6 +293,17 @@ func (m *Manager) PaperStatistics() marketpaper.PaperStatistics {
 	return m.store.PaperStatistics(time.Now())
 }
 
+// OpenPositionSymbols возвращает символы открытых Paper Trading позиций.
+func (m *Manager) OpenPositionSymbols() []string {
+	account := m.store.PaperSnapshot(time.Now())
+	symbols := make([]string, 0, len(account.OpenPositions))
+	for _, position := range account.OpenPositions {
+		if position.Symbol != "" { symbols = append(symbols, position.Symbol) }
+	}
+	sort.Strings(symbols)
+	return symbols
+}
+
 // SetSymbols объединяет частые обновления: важен только последний полный список инструментов.
 func (m *Manager) SetSymbols(symbols []string) {
 	normalized := normalizeSymbols(symbols)

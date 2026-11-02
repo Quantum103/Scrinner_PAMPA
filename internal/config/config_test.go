@@ -23,6 +23,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MarketData.InstrumentRefreshInterval != 15*time.Minute {
 		t.Errorf("InstrumentRefreshInterval = %s", cfg.MarketData.InstrumentRefreshInterval)
 	}
+	for _, required := range []string{"BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"} {
+		if !containsSymbol(cfg.MarketData.ExcludedSymbols, required) {
+			t.Errorf("список исключений по умолчанию не содержит %s: %v", required, cfg.MarketData.ExcludedSymbols)
+		}
+	}
 	if cfg.Analysis.RVOLInterval != time.Minute || cfg.Analysis.RVOLLookbackIntervals != 20 {
 		t.Errorf("RVOL defaults = %s / %d, want 1m / 20", cfg.Analysis.RVOLInterval, cfg.Analysis.RVOLLookbackIntervals)
 	}
@@ -53,7 +58,8 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	t.Setenv("TELEGRAM_ACCESS_PASSWORD", "correct-horse-battery")
 	t.Setenv("TELEGRAM_DAILY_LOSS_LIMIT_PERCENT", "4.5")
 	t.Setenv("WS_MAX_SYMBOLS_PER_CONNECTION", "20")
-	t.Setenv("MAX_TRACKED_CONTRACTS", "25")
+	t.Setenv("MAX_TRACKED_CONTRACTS", "1") // Устаревшая переменная больше не ограничивает рынок.
+	t.Setenv("MARKET_EXCLUDED_SYMBOLS", "BTCUSDT, ethusdt, BTCUSDT, DOGEUSDT")
 	t.Setenv("VIRTUAL_DEPOSIT_USDT", "25.5")
 	t.Setenv("MARKET_DATA_ENABLED", "false")
 	t.Setenv("ANALYSIS_RVOL_INTERVAL", "30s")
@@ -74,8 +80,9 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	if cfg.MarketData.InstrumentRefreshInterval != 5*time.Minute {
 		t.Errorf("InstrumentRefreshInterval = %s", cfg.MarketData.InstrumentRefreshInterval)
 	}
-	if cfg.MarketData.MaxTrackedSymbols != 25 {
-		t.Errorf("MaxTrackedSymbols = %d", cfg.MarketData.MaxTrackedSymbols)
+	wantExcluded := []string{"BTCUSDT", "ETHUSDT", "DOGEUSDT"}
+	if !equalSymbols(cfg.MarketData.ExcludedSymbols, wantExcluded) {
+		t.Errorf("ExcludedSymbols = %v, want %v", cfg.MarketData.ExcludedSymbols, wantExcluded)
 	}
 	if cfg.Paper.InitialDepositUSDT != 25.5 {
 		t.Errorf("InitialDepositUSDT = %v", cfg.Paper.InitialDepositUSDT)
@@ -359,4 +366,28 @@ func TestLoadRejectsMissingOrShortTelegramPassword(t *testing.T) {
 	if _, err := Load(); err != nil {
 		t.Fatalf("expected valid Telegram password, got error: %v", err)
 	}
+}
+
+
+func containsSymbol(symbols []string, wanted string) bool {
+	for _, symbol := range symbols { if symbol == wanted { return true } }
+	return false
+}
+
+func equalSymbols(got, want []string) bool {
+	if len(got) != len(want) { return false }
+	for i := range got { if got[i] != want[i] { return false } }
+	return true
+}
+
+func TestMarketExcludedSymbolsCanBeEmpty(t *testing.T) {
+	t.Setenv("MARKET_EXCLUDED_SYMBOLS", "")
+	cfg, err := Load()
+	if err != nil { t.Fatalf("Load() вернула ошибку: %v", err) }
+	if len(cfg.MarketData.ExcludedSymbols) != 0 { t.Fatalf("пустой список исключений дал %v", cfg.MarketData.ExcludedSymbols) }
+}
+
+func TestMarketExcludedSymbolsRejectInvalidSymbol(t *testing.T) {
+	t.Setenv("MARKET_EXCLUDED_SYMBOLS", "BTC,ETHUSDT")
+	if _, err := Load(); err == nil { t.Fatal("ожидалась ошибка для символа без суффикса USDT") }
 }

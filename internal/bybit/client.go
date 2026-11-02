@@ -48,16 +48,22 @@ type Instrument struct {
 }
 
 type Ticker struct {
-	Symbol          string
-	LastPrice       string
-	MarkPrice       string
-	BestBidPrice    string
-	BestAskPrice    string
-	Volume24h       string
-	Turnover24h     string
-	Price24hPcnt    string
-	FundingRate     string
-	NextFundingTime time.Time
+	Symbol            string
+	LastPrice         string
+	MarkPrice         string
+	Bid1Price         string
+	Bid1Size          string
+	Ask1Price         string
+	Ask1Size          string
+	BestBidPrice      string // Совместимость с существующими потребителями.
+	BestAskPrice      string // Совместимость с существующими потребителями.
+	Volume24h         string
+	Turnover24h       string
+	Price24hPcnt      string
+	OpenInterest      string
+	OpenInterestValue string
+	FundingRate       string
+	NextFundingTime   time.Time
 }
 
 type MarketData struct {
@@ -113,16 +119,20 @@ type tickerResponse struct {
 }
 
 type rawTicker struct {
-	Symbol          string `json:"symbol"`
-	LastPrice       string `json:"lastPrice"`
-	MarkPrice       string `json:"markPrice"`
-	Bid1Price       string `json:"bid1Price"`
-	Ask1Price       string `json:"ask1Price"`
-	Volume24h       string `json:"volume24h"`
-	Turnover24h     string `json:"turnover24h"`
-	Price24hPcnt    string `json:"price24hPcnt"`
-	FundingRate     string `json:"fundingRate"`
-	NextFundingTime string `json:"nextFundingTime"`
+	Symbol            string `json:"symbol"`
+	LastPrice         string `json:"lastPrice"`
+	MarkPrice         string `json:"markPrice"`
+	Bid1Price         string `json:"bid1Price"`
+	Bid1Size          string `json:"bid1Size"`
+	Ask1Price         string `json:"ask1Price"`
+	Ask1Size          string `json:"ask1Size"`
+	Volume24h         string `json:"volume24h"`
+	Turnover24h       string `json:"turnover24h"`
+	Price24hPcnt      string `json:"price24hPcnt"`
+	OpenInterest      string `json:"openInterest"`
+	OpenInterestValue string `json:"openInterestValue"`
+	FundingRate       string `json:"fundingRate"`
+	NextFundingTime   string `json:"nextFundingTime"`
 }
 
 type apiError struct {
@@ -217,45 +227,48 @@ func (c *Client) FetchLinearTickers(ctx context.Context) ([]Ticker, error) {
 		}
 
 		tickers = append(tickers, Ticker{
-			Symbol:          item.Symbol,
-			LastPrice:       item.LastPrice,
-			MarkPrice:       item.MarkPrice,
-			BestBidPrice:    item.Bid1Price,
-			BestAskPrice:    item.Ask1Price,
-			Volume24h:       item.Volume24h,
-			Turnover24h:     item.Turnover24h,
-			Price24hPcnt:    item.Price24hPcnt,
-			FundingRate:     item.FundingRate,
-			NextFundingTime: nextFundingTime,
+			Symbol:            item.Symbol,
+			LastPrice:         item.LastPrice,
+			MarkPrice:         item.MarkPrice,
+			Bid1Price:         item.Bid1Price,
+			Bid1Size:          item.Bid1Size,
+			Ask1Price:         item.Ask1Price,
+			Ask1Size:          item.Ask1Size,
+			BestBidPrice:      item.Bid1Price,
+			BestAskPrice:      item.Ask1Price,
+			Volume24h:         item.Volume24h,
+			Turnover24h:       item.Turnover24h,
+			Price24hPcnt:      item.Price24hPcnt,
+			OpenInterest:      item.OpenInterest,
+			OpenInterestValue: item.OpenInterestValue,
+			FundingRate:       item.FundingRate,
+			NextFundingTime:   nextFundingTime,
 		})
 	}
 	return tickers, nil
 }
 
-// FetchMarketData объединяет тикеры с заранее полученными спецификациями контрактов по символу.
-func (c *Client) FetchMarketData(ctx context.Context, instruments []Instrument) ([]MarketData, error) {
-	tickers, err := c.FetchLinearTickers(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+// JoinMarketData объединяет один полный снимок тикеров с переданными спецификациями.
+// Порядок инструментов сохраняется; ограничения по количеству инструментов нет.
+func JoinMarketData(instruments []Instrument, tickers []Ticker) []MarketData {
 	tickersBySymbol := make(map[string]Ticker, len(tickers))
 	for _, ticker := range tickers {
 		tickersBySymbol[ticker.Symbol] = ticker
 	}
-
 	result := make([]MarketData, 0, len(instruments))
 	for _, item := range instruments {
 		ticker, exists := tickersBySymbol[item.Symbol]
-		if !exists {
-			continue
-		}
-		result = append(result, MarketData{
-			Instrument: item,
-			Ticker:     ticker,
-		})
+		if !exists { continue }
+		result = append(result, MarketData{Instrument: item, Ticker: ticker})
 	}
-	return result, nil
+	return result
+}
+
+// FetchMarketData объединяет спецификации с одним снимком тикеров Bybit.
+func (c *Client) FetchMarketData(ctx context.Context, instruments []Instrument) ([]MarketData, error) {
+	tickers, err := c.FetchLinearTickers(ctx)
+	if err != nil { return nil, err }
+	return JoinMarketData(instruments, tickers), nil
 }
 
 func (c *Client) get(ctx context.Context, path string, query url.Values, target any) error {

@@ -38,7 +38,7 @@ type MarketDataConfig struct {
 	Enabled                   bool
 	UpdateInterval            time.Duration
 	InstrumentRefreshInterval time.Duration
-	MaxTrackedSymbols         int
+	ExcludedSymbols           []string
 }
 
 type WebSocketConfig struct {
@@ -104,7 +104,12 @@ func Load() (Config, error) {
 			Enabled:                   true,
 			UpdateInterval:            2 * time.Second,
 			InstrumentRefreshInterval: 15 * time.Minute,
-			MaxTrackedSymbols:         100,
+			ExcludedSymbols: []string{
+				"BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "BNBUSDT",
+				"DOGEUSDT", "ADAUSDT", "TRXUSDT", "LINKUSDT", "AVAXUSDT",
+				"DOTUSDT", "LTCUSDT", "BCHUSDT", "TONUSDT", "SUIUSDT",
+				"XLMUSDT", "SHIBUSDT",
+			},
 		},
 		Analysis:      marketanalysis.DefaultConfig(),
 		EntryStrategy: marketstrategy.DefaultConfig(),
@@ -173,7 +178,7 @@ func Load() (Config, error) {
 	if cfg.MarketData.InstrumentRefreshInterval, err = durationValue("INSTRUMENT_REFRESH_INTERVAL", cfg.MarketData.InstrumentRefreshInterval); err != nil {
 		return Config{}, err
 	}
-	if cfg.MarketData.MaxTrackedSymbols, err = intValue("MAX_TRACKED_CONTRACTS", cfg.MarketData.MaxTrackedSymbols); err != nil {
+	if cfg.MarketData.ExcludedSymbols, err = stringListValue("MARKET_EXCLUDED_SYMBOLS", cfg.MarketData.ExcludedSymbols); err != nil {
 		return Config{}, err
 	}
 	if cfg.WebSocket.OrderbookDepth, err = intValue("WS_ORDERBOOK_DEPTH", cfg.WebSocket.OrderbookDepth); err != nil {
@@ -406,8 +411,8 @@ func (c Config) Validate() error {
 	if c.MarketData.InstrumentRefreshInterval <= 0 {
 		return fmt.Errorf("INSTRUMENT_REFRESH_INTERVAL должен быть больше нуля")
 	}
-	if c.MarketData.MaxTrackedSymbols <= 0 {
-		return fmt.Errorf("MAX_TRACKED_CONTRACTS должен быть больше нуля")
+	if err := validateMarketSymbols("MARKET_EXCLUDED_SYMBOLS", c.MarketData.ExcludedSymbols); err != nil {
+		return err
 	}
 	if c.WebSocket.OrderbookDepth != 50 {
 		return fmt.Errorf("WS_ORDERBOOK_DEPTH должен быть равен 50 для выбранного потока стакана")
@@ -545,6 +550,46 @@ func durationListValue(key string, fallback []time.Duration) ([]time.Duration, e
 		result = append(result, parsed)
 	}
 	return result, nil
+}
+
+func stringListValue(key string, fallback []string) ([]string, error) {
+	value, ok := os.LookupEnv(key)
+	if !ok { return append([]string(nil), fallback...), nil }
+	if strings.TrimSpace(value) == "" { return []string{}, nil }
+	result := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, part := range strings.Split(value, ",") {
+		symbol := strings.ToUpper(strings.TrimSpace(part))
+		if symbol == "" { continue }
+		if err := validateMarketSymbol(symbol); err != nil { return nil, fmt.Errorf("%s: %w", key, err) }
+		if _, exists := seen[symbol]; exists { continue }
+		seen[symbol] = struct{}{}
+		result = append(result, symbol)
+	}
+	return result, nil
+}
+
+func validateMarketSymbols(key string, symbols []string) error {
+	seen := make(map[string]struct{}, len(symbols))
+	for _, rawSymbol := range symbols {
+		symbol := strings.ToUpper(strings.TrimSpace(rawSymbol))
+		if err := validateMarketSymbol(symbol); err != nil { return fmt.Errorf("%s: %w", key, err) }
+		if _, exists := seen[symbol]; exists { return fmt.Errorf("%s содержит дублирующийся символ %q", key, symbol) }
+		seen[symbol] = struct{}{}
+	}
+	return nil
+}
+
+func validateMarketSymbol(symbol string) error {
+	if !strings.HasSuffix(symbol, "USDT") || len(symbol) <= len("USDT") {
+		return fmt.Errorf("ожидался символ USDT Linear Perpetual в формате BASEUSDT, получено %q", symbol)
+	}
+	for _, char := range symbol {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
+			return fmt.Errorf("недопустимый символ %q в %q", string(char), symbol)
+		}
+	}
+	return nil
 }
 
 func boolValue(key string, fallback bool) (bool, error) {
