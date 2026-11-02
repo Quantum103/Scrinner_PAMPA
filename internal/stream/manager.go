@@ -45,6 +45,7 @@ type Config struct {
 	Analysis                marketanalysis.Config
 	Strategy                marketstrategy.Config
 	Paper                   marketpaper.Config
+	PaperRepository         marketpaper.Repository
 }
 
 type wireConn interface {
@@ -111,7 +112,7 @@ func NewManager(cfg Config, logger *slog.Logger) (*Manager, error) {
 		cfg.ReconnectMax < cfg.ReconnectMin || cfg.TradeBufferCapacity <= 0 || cfg.SeenTradeIDCapacity <= 0 {
 		return nil, errors.New("некорректные параметры публичного WebSocket Bybit")
 	}
-	store, err := NewStoreWithAnalysisStrategyAndPaper(cfg.Depth, cfg.MaxDataAge, cfg.TradeBufferCapacity, cfg.SeenTradeIDCapacity, cfg.Analysis, cfg.Strategy, cfg.Paper)
+	store, err := NewStoreWithAnalysisStrategyAndPaperRepository(cfg.Depth, cfg.MaxDataAge, cfg.TradeBufferCapacity, cfg.SeenTradeIDCapacity, cfg.Analysis, cfg.Strategy, cfg.Paper, cfg.PaperRepository)
 	if err != nil {
 		return nil, err
 	}
