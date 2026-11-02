@@ -1,6 +1,7 @@
 package paper
 
 import (
+	"context"
 	"math"
 	"path/filepath"
 	"testing"
@@ -84,7 +85,7 @@ func TestSQLiteRestoresAccountAndOpenPositionAfterRestart(t *testing.T) {
 	if len(afterUpdate.OpenPositions) != 1 || afterUpdate.OpenPositions[0].StopPrice != position.StopPrice {
 		t.Fatalf("restored position was not managed by fresh market data: %+v", afterUpdate.OpenPositions)
 	}
-	if err := reopenedRepository.IntegrityCheck(t.Context()); err != nil {
+	if err := reopenedRepository.IntegrityCheck(context.Background()); err != nil {
 		t.Fatalf("integrity_check after restart: %v", err)
 	}
 }
@@ -136,7 +137,7 @@ func TestSQLiteCloseIsSavedConsistentlyAndRestored(t *testing.T) {
 		account.Statistics.Mode != "Paper Trading" {
 		t.Fatalf("restored account statistics or margin are incorrect: %+v", account)
 	}
-	if err := reopenedRepository.IntegrityCheck(t.Context()); err != nil {
+	if err := reopenedRepository.IntegrityCheck(context.Background()); err != nil {
 		t.Fatalf("integrity_check after close: %v", err)
 	}
 }
