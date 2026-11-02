@@ -15,6 +15,10 @@ import (
 	marketstrategy "github.com/Quantum103/Scrinner_PAMPA/internal/strategy"
 )
 
+// ErrTradeDataGap сообщает, что отдельные сделки отброшены из-за недопустимого времени.
+// Поток WebSocket при этом остаётся рабочим: анализатор сбрасывает историю символа.
+var ErrTradeDataGap = errors.New("обнаружена сделка вне временного допуска")
+
 type Trade struct {
 	Symbol    string    `json:"symbol"`
 	Price     string    `json:"price"`
@@ -251,6 +255,7 @@ func (s *Store) ApplyTrades(message []byte, receivedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	touched := make(map[string]struct{}, len(parsed.Data))
+	var temporalIssue error
 	for _, item := range parsed.Data {
 		if item.Symbol == "" || item.ID == "" || item.Timestamp <= 0 {
 			return errors.New("сделка не содержит символ, ID или время")
@@ -294,6 +299,16 @@ func (s *Store) ApplyTrades(message []byte, receivedAt time.Time) error {
 			Time: trade.TradeTime, ReceivedAt: trade.Received,
 			Price: mustParsePositive(trade.Price), Quantity: mustParsePositive(trade.Quantity), Side: trade.Side,
 		}); err != nil {
+			if errors.Is(err, marketanalysis.ErrTradeTimestampOutOfRange) ||
+				errors.Is(err, marketanalysis.ErrTradeOutOfOrder) {
+				state.tradeGap = true
+				state.lastStrategyEvaluationAt = time.Time{}
+				s.strategy.ResetProgress(item.Symbol, "отброшена сделка с недопустимым временем; требуется заново накопить непрерывную историю")
+				if temporalIssue == nil {
+					temporalIssue = fmt.Errorf("%w для %s: %v", ErrTradeDataGap, item.Symbol, err)
+				}
+				continue
+			}
 			state.tradeGap = true
 			return fmt.Errorf("обновить анализатор рынка для %s: %w", item.Symbol, err)
 		}
@@ -314,7 +329,7 @@ func (s *Store) ApplyTrades(message []byte, receivedAt time.Time) error {
 	for symbol := range touched {
 		s.evaluateStrategy(symbol, receivedAt)
 	}
-	return nil
+	return temporalIssue
 }
 
 func (s *symbolState) rememberTradeID(id string, capacity int) {
@@ -339,6 +354,11 @@ func (s *Store) evaluateStrategy(symbol string, now time.Time) {
 	bookSnapshot := state.book.snapshot(symbol)
 	bookSnapshot.Fresh = withinAge(now, state.book.receivedAt, s.maxDataAge)
 	analysisSnapshot := s.analyzer.Snapshot(symbol, now, state.connected, analysisBook(bookSnapshot))
+	// После разрыва истории входы снова разрешаются только когда анализатор
+	// восстановил полный непрерывный набор окон и все метрики стали Ready.
+	if state.tradeGap && analysisSnapshot.Status == marketanalysis.StatusReady {
+		state.tradeGap = false
+	}
 	s.paper.UpdateOrderFlow(symbol, analysisSnapshot, paperBook(bookSnapshot, bookSnapshot.Fresh), now)
 
 	if s.entryPaused || s.dailyLossReached {
