@@ -165,7 +165,7 @@ func (b *Bot) processUpdate(ctx context.Context, update Update) {
 		b.sendTo(ctx, message.Chat.ID, b.tradesText())
 	case "/pause":
 		b.manager.SetEntryPaused(true)
-		b.sendTo(ctx, message.Chat.ID, "Поиск новых входов приостановлен. Уже открытая позиция продолжает сопровождаться: Trailing Stop, Order Flow и Funding активны.")
+		b.sendTo(ctx, message.Chat.ID, "Поиск новых входов приостановлен. Сопровождение открытой позиции продолжается: Trailing Stop, Order Flow и Funding активны.")
 	case "/resume":
 		b.manager.SetEntryPaused(false)
 		if b.manager.DailyLossReached() {
