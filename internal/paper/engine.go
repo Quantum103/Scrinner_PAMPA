@@ -885,7 +885,7 @@ func (e *Engine) Snapshot(now time.Time) AccountSnapshot {
 	}
 	closedTrades := append([]Position(nil), e.closedTrades...)
 	return AccountSnapshot{
-		Mode: "Paper Trading", Statistics: calculateStatistics(e.closedTrades, e.equityHistory, e.totalFees, e.netFunding),
+		Mode: "Paper Trading", Statistics: calculateStatistics(e.closedTrades, positions, e.equityHistory, e.totalFees, e.netFunding),
 		EquityHistory: append([]EquityPoint(nil), e.equityHistory...),
 		Enabled: e.cfg.Enabled, Currency: "USDT",
 		Balance: e.balance, Equity: equity, FreeMargin: equity - reserved,
