@@ -374,6 +374,10 @@ func (s *Store) PaperSnapshot(now time.Time) marketpaper.AccountSnapshot {
 	return s.paper.Snapshot(now)
 }
 
+func (s *Store) PaperStatistics(now time.Time) marketpaper.PaperStatistics {
+	return s.paper.Snapshot(now).Statistics
+}
+
 func (s *Store) DrainPaperEvents() []marketpaper.Event {
 	return s.paper.DrainEvents()
 }
