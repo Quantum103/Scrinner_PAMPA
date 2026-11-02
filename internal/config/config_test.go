@@ -1,7 +1,7 @@
 package config
 
 import (
-	"strings"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -74,7 +74,7 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	if cfg.Paper.InitialDepositUSDT != 25.5 {
 		t.Errorf("InitialDepositUSDT = %v", cfg.Paper.InitialDepositUSDT)
 	}
-	if !strings.HasSuffix(cfg.Database.Path, "/paper-test.db") || cfg.Database.BusyTimeout != 8*time.Second {
+	if filepath.Base(cfg.Database.Path) != "paper-test.db" || cfg.Database.BusyTimeout != 8*time.Second {
 		t.Errorf("Database overrides = %+v", cfg.Database)
 	}
 	if cfg.MarketData.Enabled {
