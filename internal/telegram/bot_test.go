@@ -136,24 +136,10 @@ func TestDailyStartingEquityUsesFirstPointOfCurrentUTCDay(t *testing.T) {
 }
 
 func TestClosedTradeNotificationContainsAllExecutionCostsAndBalance(t *testing.T) {
-	var capture messageCapture
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Text string `json:"text"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&request)
-		capture.mu.Lock()
-		capture.messages = append(capture.messages, request.Text)
-		capture.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"ok":true,"result":{}}`)
-	}))
-	defer server.Close()
-
 	manager := newTestManager(t)
 	bot, err := NewBot(Config{
 		Token: "test-token", AllowedUserIDs: []int64{123},
-		DailyLossLimitPercent: 5, APIBaseURL: server.URL,
+		DailyLossLimitPercent: 5,
 	}, manager, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
@@ -170,12 +156,12 @@ func TestClosedTradeNotificationContainsAllExecutionCostsAndBalance(t *testing.T
 		Type: "position_closed", Symbol: "BTCUSDT", At: closedAt,
 	}, marketpaper.AccountSnapshot{Balance: 13.61, ClosedTrades: []marketpaper.Position{trade}})
 
-	capture.mu.Lock()
-	defer capture.mu.Unlock()
-	if len(capture.messages) != 1 {
-		t.Fatalf("closed trade message count = %d", len(capture.messages))
+	var message string
+	select {
+	case message = <-bot.notifications:
+	case <-time.After(time.Second):
+		t.Fatal("close notification was not queued")
 	}
-	message := capture.messages[0]
 	for _, expected := range []string{
 		"Paper Trading", "Цена выхода", "Причина выхода", "PnL до издержек",
 		"Комиссии", "Проскальзывание", "Funding", "Чистый PnL", "Новый виртуальный баланс",
