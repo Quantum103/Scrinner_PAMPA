@@ -297,6 +297,7 @@ func NewWithRepository(cfg Config, repository Repository) (*Engine, error) {
 		positions: make(map[string]*Position), processedSignals: make(map[string]struct{}),
 	}
 	if repository == nil {
+		e.recordEquityLocked(time.Now().UTC(), true)
 		return e, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -455,7 +456,7 @@ func (e *Engine) UpdateMarketData(items []bybit.MarketData, now time.Time) {
 		}
 	}
 	e.updatedAt = now
-	if len(e.positions) > 0 {
+	if len(e.positions) > 0 || e.storageErr != nil {
 		e.recordEquityLocked(now, false)
 		_ = e.persistLocked(now)
 	}
@@ -522,7 +523,9 @@ func (e *Engine) OpenLong(signal strategy.Signal, book Book, now time.Time) Even
 		return reject("сигнал устарел")
 	}
 	if e.storageErr != nil {
-		return reject("вход заблокирован: последнее сохранение Paper Trading в SQLite завершилось ошибкой")
+		if err := e.persistLocked(now); err != nil {
+			return reject("вход заблокирован: не удалось восстановить согласованное сохранение в SQLite")
+		}
 	}
 	id := signalID(signal)
 	if _, processed := e.processedSignals[id]; processed {
@@ -682,6 +685,9 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 	defer e.mu.Unlock()
 	position := e.positions[symbol]
 	if position == nil {
+		if e.storageErr != nil {
+			_ = e.persistLocked(now)
+		}
 		return nil
 	}
 	if !bookUsable(book, now, e.cfg.MaxBookAge) {
@@ -691,11 +697,13 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 	bestBid := book.Bids[0].Price
 	position.MarkPrice = bestBid
 	e.applyDueFunding(position, now)
-	if position.ExitReason == "" && !position.StopTriggered && bestBid > position.HighWaterPrice {
+	if bestBid > position.HighWaterPrice {
 		position.HighWaterPrice = bestBid
-		candidate := floorToStep(bestBid*(1-e.cfg.TrailingStopPercent/100), position.Contract.TickSize)
-		if candidate > position.StopPrice {
-			position.StopPrice = candidate
+		if position.ExitReason == "" && !position.StopTriggered {
+			candidate := floorToStep(bestBid*(1-e.cfg.TrailingStopPercent/100), position.Contract.TickSize)
+			if candidate > position.StopPrice {
+				position.StopPrice = candidate
+			}
 		}
 	}
 	if position.LowWaterPrice <= 0 || bestBid < position.LowWaterPrice {
@@ -738,6 +746,9 @@ func (e *Engine) CloseLong(symbol string, book Book, now time.Time, reason strin
 	if !bookUsable(book, now, e.cfg.MaxBookAge) {
 		event := Event{Type: "close_rejected", Symbol: symbol, At: now, Reason: "невозможно закрыть позицию: стакан отсутствует, неполон или устарел"}
 		e.addEvent(event)
+		if e.storageErr != nil {
+			_ = e.persistLocked(now)
+		}
 		return event
 	}
 	if reason == "" {
