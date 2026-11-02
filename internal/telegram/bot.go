@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
