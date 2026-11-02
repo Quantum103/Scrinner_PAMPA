@@ -313,7 +313,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, target 
 		}
 
 		if statusCode != http.StatusOK {
-			requestErr := fmt.Errorf("Bybit вернула HTTP %d: %s", statusCode, http.StatusText(statusCode))
+			requestErr := formatHTTPStatusError(statusCode, body, headers)
 			if !isRetryableStatus(statusCode) || attempt == maxRetries {
 				return requestErr
 			}
@@ -343,6 +343,37 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, target 
 	}
 
 	return fmt.Errorf("Bybit: превышено количество повторных попыток")
+}
+
+func formatHTTPStatusError(statusCode int, body []byte, headers http.Header) error {
+	detail := strings.TrimSpace(string(body))
+	var response struct {
+		RetCode int    `json:"retCode"`
+		RetMsg  string `json:"retMsg"`
+	}
+	if json.Unmarshal(body, &response) == nil && (response.RetCode != 0 || response.RetMsg != "") {
+		detail = fmt.Sprintf("retCode=%d retMsg=%s", response.RetCode, response.RetMsg)
+	}
+	detail = strings.Join(strings.Fields(detail), " ")
+	if len(detail) > 512 {
+		detail = detail[:512] + "..."
+	}
+
+	message := fmt.Sprintf("Bybit вернула HTTP %d: %s", statusCode, http.StatusText(statusCode))
+	if detail != "" {
+		message += "; ответ сервера: " + detail
+	}
+	for _, name := range []string{
+		"CF-Ray",
+		"X-Bapi-Limit",
+		"X-Bapi-Limit-Status",
+		"X-Bapi-Limit-Reset-Timestamp",
+	} {
+		if value := strings.TrimSpace(headers.Get(name)); value != "" {
+			message += fmt.Sprintf("; %s=%s", strings.ToLower(name), value)
+		}
+	}
+	return fmt.Errorf("%s", message)
 }
 
 func (c *Client) waitForRequest(ctx context.Context) error {
