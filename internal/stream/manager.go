@@ -549,9 +549,8 @@ func (m *Manager) resubscribeOrderBook(ctx context.Context, writer *serializedWr
 	if err := writer.writeJSON(subscriptionBatch{Operation: "unsubscribe", Arguments: []string{topic}}); err != nil {
 		return fmt.Errorf("отменить старую подписку: %w", err)
 	}
-	if err := waitContext(ctx, subscriptionBatchPause); err != nil {
-		return err
-	}
+	// Команды отправляются подряд: отдельная пауза на каждый символ блокировала
+	// основной цикл чтения и накапливала задержку сообщений остальных подписок.
 	if err := writer.writeJSON(subscriptionBatch{Operation: "subscribe", Arguments: []string{topic}}); err != nil {
 		return fmt.Errorf("создать новую подписку: %w", err)
 	}
@@ -610,6 +609,14 @@ func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
 			}
 		}
 		if err := m.store.ApplyTrades(payload, receivedAt); err != nil {
+			if errors.Is(err, ErrTradeDataGap) {
+				// Отдельные просроченные/переставленные сделки уже отброшены Store.
+				// Не рвём общий WebSocket-сегмент: остальные символы продолжают работать.
+				m.logger.Warn("Отброшена сделка с недопустимым временем; история символа сброшена до повторного накопления",
+					"topic", envelope.Topic, "error", err)
+				m.logSignals()
+				return nil
+			}
 			wrapped := fmt.Errorf("сохранить сделки: %w", err)
 			m.ReportMarketDataIssue(wrapped.Error())
 			return wrapped
