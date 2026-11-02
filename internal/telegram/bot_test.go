@@ -16,6 +16,17 @@ import (
 	"github.com/Quantum103/Scrinner_PAMPA/internal/stream"
 )
 
+func newTestManager(t *testing.T) *stream.Manager {
+	t.Helper()
+	cfg := stream.DefaultConfig("wss://example.test/v5/public/linear")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager, err := stream.NewManager(cfg, logger)
+	if err != nil {
+		t.Fatalf("stream.NewManager() error = %v", err)
+	}
+	return manager
+}
+
 type messageCapture struct {
 	mu       sync.Mutex
 	messages []string
