@@ -349,6 +349,13 @@ func NewWithRepository(cfg Config, repository Repository) (*Engine, error) {
 		}
 	}
 	e.updatedAt = state.UpdatedAt
+	// Создаём опорную equity-точку при запуске: Telegram daily loss monitor
+	// сможет корректно начать новый UTC-день даже после ночного простоя.
+	now := time.Now().UTC()
+	e.recordEquityLocked(now, true)
+	if err := e.persistLocked(now); err != nil {
+		return nil, fmt.Errorf("сохранить восстановленный Paper Trading account: %w", err)
+	}
 	return e, nil
 }
 
