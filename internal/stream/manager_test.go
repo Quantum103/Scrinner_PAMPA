@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -194,6 +195,36 @@ func TestReadLoopProcessesArtificialBybitMessages(t *testing.T) {
 	state, _ := manager.store.Snapshot("BTCUSDT", now)
 	if !state.OrderBook.Valid || state.LastTrade == nil || state.LastTrade.TradeID != "trade-1" {
 		t.Fatalf("artificial Bybit messages were not processed: %+v", state)
+	}
+}
+
+func TestReadLoopContinuesAfterStaleTrade(t *testing.T) {
+	manager := testManager(t)
+	manager.store.StartSession([]string{"BTCUSDT", "ETHUSDT"})
+	conn := newFakeWireConn()
+	now := time.Now()
+
+	staleTrade := fmt.Sprintf(`{"topic":"publicTrade.BTCUSDT","type":"snapshot","ts":%d,"data":[{"T":%d,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100","i":"stale-btc-trade"}]}`,
+		now.UnixMilli(), now.Add(-6*time.Second).UnixMilli())
+	freshTrade := fmt.Sprintf(`{"topic":"publicTrade.ETHUSDT","type":"snapshot","ts":%d,"data":[{"T":%d,"s":"ETHUSDT","S":"Buy","v":"0.1","p":"200","i":"fresh-eth-trade"}]}`,
+		now.UnixMilli(), now.Add(-100*time.Millisecond).UnixMilli())
+
+	conn.reads <- fakeRead{messageType: 1, payload: []byte(staleTrade)}
+	conn.reads <- fakeRead{messageType: 1, payload: []byte(freshTrade)}
+	_ = conn.Close()
+
+	err := manager.readLoop(context.Background(), conn, &serializedWriter{conn: conn})
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("readLoop error = %v, want EOF after both messages", err)
+	}
+
+	btc, ok := manager.store.Snapshot("BTCUSDT", time.Now())
+	if !ok || !btc.TradeGap || btc.LastTrade != nil {
+		t.Fatalf("stale BTC trade was not discarded safely: %+v", btc)
+	}
+	eth, ok := manager.store.Snapshot("ETHUSDT", time.Now())
+	if !ok || eth.LastTrade == nil || eth.LastTrade.TradeID != "fresh-eth-trade" {
+		t.Fatalf("stale BTC trade interrupted ETH stream: %+v", eth)
 	}
 }
 
