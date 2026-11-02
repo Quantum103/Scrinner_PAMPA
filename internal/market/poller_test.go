@@ -30,6 +30,23 @@ func (c *fakeMarketRESTClient) FetchLinearTickers(context.Context) ([]bybit.Tick
 	return append([]bybit.Ticker(nil), c.tickers...), nil
 }
 
+type fakeKlineSymbolSubscriber struct {
+	mu sync.Mutex
+	symbols []string
+}
+
+func (s *fakeKlineSymbolSubscriber) SetSymbols(symbols []string) {
+	s.mu.Lock()
+	s.symbols = append([]string(nil), symbols...)
+	s.mu.Unlock()
+}
+
+func (s *fakeKlineSymbolSubscriber) snapshot() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.symbols...)
+}
+
 type fakePollerSubscriber struct {
 	mu sync.Mutex
 	symbols []string
@@ -81,9 +98,10 @@ func TestPollerPublishesFullMarketWithoutAlphabeticalTruncation(t *testing.T) {
 	}
 	client := &fakeMarketRESTClient{instruments: instruments, tickers: tickers}
 	subscriber := &fakePollerSubscriber{updated: make(chan struct{}, 1), openPositions: []string{"BTCUSDT"}}
+	klineSubscriber := &fakeKlineSymbolSubscriber{}
 	monitor := NewMonitor()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	poller := NewPoller(client, 10*time.Millisecond, time.Hour, []string{"BTCUSDT", "ETHUSDT"}, subscriber, monitor, nil, logger)
+	poller := NewPoller(client, 10*time.Millisecond, time.Hour, []string{"BTCUSDT", "ETHUSDT"}, subscriber, monitor, klineSubscriber, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -103,6 +121,7 @@ func TestPollerPublishesFullMarketWithoutAlphabeticalTruncation(t *testing.T) {
 	}
 
 	allSymbols, paperSnapshot := subscriber.snapshot()
+	klineSymbols := klineSubscriber.snapshot()
 	marketSnapshot := monitor.Snapshot()
 	if len(paperSnapshot) != len(instruments) {
 		t.Fatalf("Paper Trading получил %d инструментов, ожидалось %d", len(paperSnapshot), len(instruments))
@@ -111,14 +130,22 @@ func TestPollerPublishesFullMarketWithoutAlphabeticalTruncation(t *testing.T) {
 		t.Fatalf("Market Monitor получил %d инструментов, ожидалось 130 без BTC/ETH", len(marketSnapshot.Items))
 	}
 	if marketSnapshot.UpdatedAt.IsZero() { t.Fatal("Market Monitor не сохранил время снимка") }
-	if len(allSymbols) != 131 {
-		t.Fatalf("подробный список содержит %d символов, ожидалось 130 доступных + 1 открытая позиция", len(allSymbols))
+	if len(allSymbols) != 1 {
+		t.Fatalf("подробный список содержит %d символов, ожидалась только одна открытая Paper Trading позиция", len(allSymbols))
+	}
+	if len(klineSymbols) != 130 {
+		t.Fatalf("Kline Monitor получил %d символов, ожидалось 130 подходящих инструментов", len(klineSymbols))
 	}
 	seen := make(map[string]bool, len(allSymbols))
 	for _, symbol := range allSymbols { seen[symbol] = true }
 	if !seen["BTCUSDT"] { t.Fatal("открытая позиция BTCUSDT потеряла подписку, несмотря на исключение из мониторинга") }
-	if seen["ETHUSDT"] { t.Fatal("ETHUSDT не должен попадать в мониторинг и подробные подписки без открытой позиции") }
-	if !seen["COIN129USDT"] { t.Fatal("последний контракт списка потерян — вероятно, список был обрезан") }
+	if seen["ETHUSDT"] { t.Fatal("ETHUSDT не должен попадать в подробные подписки без открытой позиции") }
+	if seen["COIN129USDT"] { t.Fatal("все символы рынка не должны попадать в подробные подписки") }
+	klineSeen := make(map[string]bool, len(klineSymbols))
+	for _, symbol := range klineSymbols { klineSeen[symbol] = true }
+	if klineSeen["BTCUSDT"] || klineSeen["ETHUSDT"] || !klineSeen["COIN129USDT"] {
+		t.Fatalf("Kline-подписки не соответствуют полному рынку с исключениями: %v", klineSymbols)
+	}
 	if paperSnapshot[0].Instrument.Symbol != "BTCUSDT" || paperSnapshot[0].Instrument.MinOrderQty != "0.001" {
 		t.Fatalf("спецификации исключённого инструмента не переданы Paper Trading: %+v", paperSnapshot[0])
 	}

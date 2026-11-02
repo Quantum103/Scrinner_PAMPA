@@ -109,8 +109,10 @@ func (p *Poller) Run(ctx context.Context) {
 				p.klineSymbols.SetSymbols(symbols)
 			}
 			openPositions := p.openPositionSymbols()
+			// Подробный поток publicTrade/orderbook пока сохраняется только для открытых позиций.
+			// Полный подходящий рынок обслуживается отдельным Kline Manager.
 			if subscriber, ok := p.subscriber.(SymbolSubscriber); ok {
-				subscriber.SetSymbols(symbolsWithOpenPositions(monitorInstruments, openPositions))
+				subscriber.SetSymbols(symbolsWithOpenPositions(nil, openPositions))
 			}
 			retryDelay = initialInstrumentRetry
 			p.logger.Info("Список контрактов Bybit обновлён",
