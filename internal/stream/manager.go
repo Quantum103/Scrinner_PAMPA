@@ -94,6 +94,7 @@ type Manager struct {
 	connector connector
 
 	mu                sync.Mutex
+	running           bool
 	symbols           []string
 	updates           chan struct{}
 	observer          Observer
@@ -192,7 +193,7 @@ func (m *Manager) Status() ManagerStatus {
 		}
 	}
 	status := ManagerStatus{
-		Running: true, ConnectedShards: connected, TotalShards: m.totalShards,
+		Running: m.running, ConnectedShards: connected, TotalShards: m.totalShards,
 		LastError: m.lastConnectionErr, EntryPaused: m.store.EntryPaused(),
 		DailyLossReached: m.store.DailyLossReached(), TrackedSymbols: len(m.symbols),
 	}
@@ -223,6 +224,9 @@ func (m *Manager) setShardConnection(symbols []string, connected bool, err error
 	previous := m.shardConnections[key]
 	if connected || !previous {
 		m.shardConnections[key] = connected
+	}
+	if connected {
+		m.lastConnectionErr = ""
 	}
 	if err != nil {
 		m.lastConnectionErr = err.Error()
@@ -277,6 +281,15 @@ func (m *Manager) SetSymbols(symbols []string) {
 }
 
 func (m *Manager) Run(ctx context.Context) {
+	m.mu.Lock()
+	m.running = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.running = false
+		m.mu.Unlock()
+	}()
+
 	var shardCancel context.CancelFunc
 	var shardWG sync.WaitGroup
 
