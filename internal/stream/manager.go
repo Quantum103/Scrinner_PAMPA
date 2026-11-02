@@ -115,6 +115,33 @@ type subscriptionBatch struct {
 	Arguments []string `json:"args"`
 }
 
+const maxOrderBookResyncAttempts = 2
+
+type orderBookResyncError struct {
+	topic  string
+	symbol string
+	cause  error
+}
+
+func (e *orderBookResyncError) Error() string { return e.cause.Error() }
+func (e *orderBookResyncError) Unwrap() error { return e.cause }
+
+// serializedWriter не допускает одновременную запись heartbeat и команд подписки.
+// Gorilla WebSocket разрешает только одного конкурентного writer.
+type serializedWriter struct {
+	conn wireConn
+	mu   sync.Mutex
+}
+
+func (w *serializedWriter) writeJSON(value any) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	return w.conn.WriteJSON(value)
+}
+
 func DefaultConfig(url string) Config {
 	return Config{
 		URL:                     url,
@@ -379,6 +406,7 @@ func (m *Manager) connectAndServe(ctx context.Context, symbols []string) error {
 		return fmt.Errorf("подключиться к Bybit: %w", err)
 	}
 	defer conn.Close()
+	writer := &serializedWriter{conn: conn}
 	conn.SetReadLimit(maxWebSocketMessageSize)
 	_ = conn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout))
 	conn.SetPongHandler(func(string) error {
@@ -386,8 +414,7 @@ func (m *Manager) connectAndServe(ctx context.Context, symbols []string) error {
 	})
 
 	for _, batch := range buildSubscriptionBatches(symbols, m.cfg.Depth, m.cfg.MaxArgsPerSubscribe) {
-		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		if err := conn.WriteJSON(batch); err != nil {
+		if err := writer.writeJSON(batch); err != nil {
 			return fmt.Errorf("отправить подписку Bybit: %w", err)
 		}
 		if err := waitContext(ctx, subscriptionBatchPause); err != nil {
@@ -404,7 +431,7 @@ func (m *Manager) connectAndServe(ctx context.Context, symbols []string) error {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	heartbeatDone := make(chan struct{})
 	heartbeatErr := make(chan error, 1)
-	go m.heartbeat(sessionCtx, cancel, conn, heartbeatDone, heartbeatErr)
+	go m.heartbeat(sessionCtx, cancel, writer, heartbeatDone, heartbeatErr)
 	closeOnCancel := make(chan struct{})
 	watcherDone := make(chan struct{})
 	go func() {
@@ -417,7 +444,7 @@ func (m *Manager) connectAndServe(ctx context.Context, symbols []string) error {
 		}
 	}()
 
-	readErr := m.readLoop(sessionCtx, conn)
+	readErr := m.readLoop(sessionCtx, conn, writer)
 	cancel()
 	close(closeOnCancel)
 	<-watcherDone
@@ -436,7 +463,7 @@ func (m *Manager) connectAndServe(ctx context.Context, symbols []string) error {
 	return readErr
 }
 
-func (m *Manager) heartbeat(ctx context.Context, cancel context.CancelFunc, conn wireConn, done chan<- struct{}, errors chan<- error) {
+func (m *Manager) heartbeat(ctx context.Context, cancel context.CancelFunc, writer *serializedWriter, done chan<- struct{}, errors chan<- error) {
 	defer close(done)
 	ticker := time.NewTicker(m.cfg.HeartbeatInterval)
 	defer ticker.Stop()
@@ -445,8 +472,7 @@ func (m *Manager) heartbeat(ctx context.Context, cancel context.CancelFunc, conn
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if err := conn.WriteJSON(map[string]string{"op": "ping"}); err != nil {
+			if err := writer.writeJSON(map[string]string{"op": "ping"}); err != nil {
 				m.logger.Warn("Не удалось отправить heartbeat Bybit", "ошибка", err)
 				select {
 				case errors <- err:
@@ -459,7 +485,8 @@ func (m *Manager) heartbeat(ctx context.Context, cancel context.CancelFunc, conn
 	}
 }
 
-func (m *Manager) readLoop(ctx context.Context, conn wireConn) error {
+func (m *Manager) readLoop(ctx context.Context, conn wireConn, writer *serializedWriter) error {
+	pendingSnapshots := make(map[string]int)
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -474,10 +501,61 @@ func (m *Manager) readLoop(ctx context.Context, conn wireConn) error {
 		if err := conn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout)); err != nil {
 			return fmt.Errorf("обновить таймаут чтения WebSocket: %w", err)
 		}
+
+		var header struct {
+			Topic string `json:"topic"`
+			Type  string `json:"type"`
+		}
+		if err := json.Unmarshal(payload, &header); err != nil {
+			return fmt.Errorf("не удалось разобрать заголовок сообщения Bybit: %w", err)
+		}
+
+		// После запроса повторной подписки локальная книга остаётся невалидной.
+		// Не применяем пришедшие до snapshot delta и не запускаем повторную
+		// синхронизацию на каждое такое сообщение.
+		if pendingSnapshots[header.Topic] > 0 && header.Type == "delta" {
+			continue
+		}
+
 		if err := m.handleMessage(payload, time.Now()); err != nil {
-			return err
+			var resyncErr *orderBookResyncError
+			if !errors.As(err, &resyncErr) {
+				return err
+			}
+			attempts := pendingSnapshots[resyncErr.topic]
+			if attempts >= maxOrderBookResyncAttempts {
+				m.logger.Error("Не удалось восстановить стакан после повторных подписок; символ исключён из торговых сигналов",
+					"symbol", resyncErr.symbol, "topic", resyncErr.topic, "error", err)
+				continue
+			}
+			attempts++
+			pendingSnapshots[resyncErr.topic] = attempts
+			if err := m.resubscribeOrderBook(ctx, writer, resyncErr.topic); err != nil {
+				return fmt.Errorf("повторно подписаться на стакан %s: %w", resyncErr.symbol, err)
+			}
+			m.logger.Warn("Запрошен новый snapshot стакана без отключения WebSocket-соединения",
+				"symbol", resyncErr.symbol, "topic", resyncErr.topic,
+				"attempt", attempts, "error", err)
+			continue
+		}
+
+		if strings.HasPrefix(header.Topic, "orderbook.") && header.Type == "snapshot" {
+			delete(pendingSnapshots, header.Topic)
 		}
 	}
+}
+
+func (m *Manager) resubscribeOrderBook(ctx context.Context, writer *serializedWriter, topic string) error {
+	if err := writer.writeJSON(subscriptionBatch{Operation: "unsubscribe", Arguments: []string{topic}}); err != nil {
+		return fmt.Errorf("отменить старую подписку: %w", err)
+	}
+	if err := waitContext(ctx, subscriptionBatchPause); err != nil {
+		return err
+	}
+	if err := writer.writeJSON(subscriptionBatch{Operation: "subscribe", Arguments: []string{topic}}); err != nil {
+		return fmt.Errorf("создать новую подписку: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
@@ -513,6 +591,11 @@ func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
 		if err := m.store.ApplyOrderBook(payload, receivedAt); err != nil {
 			wrapped := fmt.Errorf("обновить стакан %s: %w", message.Data.Symbol, err)
 			m.ReportMarketDataIssue(wrapped.Error())
+			if errors.Is(err, ErrSnapshotRequired) || errors.Is(err, ErrInvalidOrderbook) {
+				return &orderBookResyncError{
+					topic: envelope.Topic, symbol: message.Data.Symbol, cause: wrapped,
+				}
+			}
 			return wrapped
 		}
 		m.logSignals()

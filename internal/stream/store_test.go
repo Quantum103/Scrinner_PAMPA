@@ -232,7 +232,7 @@ func TestSubscriptionBatchesStayWithinConfiguredLimits(t *testing.T) {
 	}
 }
 
-func TestDeltaAfterStaleBookRequiresNewSnapshot(t *testing.T) {
+func TestDeltaAfterQuietBookPeriodKeepsSnapshotValid(t *testing.T) {
 	store := newTestStore(t, 50, 10)
 	now := time.Now()
 	snapshot := `{"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1,"data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","1"]],"u":10,"seq":10}}`
@@ -241,12 +241,15 @@ func TestDeltaAfterStaleBookRequiresNewSnapshot(t *testing.T) {
 	}
 	delta := `{"topic":"orderbook.50.BTCUSDT","type":"delta","ts":1,"data":{"s":"BTCUSDT","b":[["100","2"]],"a":[],"u":11,"seq":11}}`
 	later := now.Add(6 * time.Second)
-	if err := store.ApplyOrderBook(withFreshTimestamp(delta, later), later); !errors.Is(err, ErrSnapshotRequired) {
-		t.Fatalf("stale book delta error = %v, want ErrSnapshotRequired", err)
+	if err := store.ApplyOrderBook(withFreshTimestamp(delta, later), later); err != nil {
+		t.Fatalf("delta after a quiet period was rejected: %v", err)
 	}
-	state, _ := store.Snapshot("BTCUSDT", later)
-	if state.OrderBook.Valid || state.UsableForSignal {
-		t.Fatal("delta after a stale period restored a book without snapshot")
+	state, ok := store.Snapshot("BTCUSDT", later)
+	if !ok || !state.OrderBook.Valid || !state.OrderBook.Fresh || state.OrderBook.BestBid != "100" {
+		t.Fatalf("orderbook was not kept valid after quiet period: %+v", state.OrderBook)
+	}
+	if len(state.OrderBook.Bids) == 0 || state.OrderBook.Bids[0].Size != "2" {
+		t.Fatalf("delta was not applied after quiet period: %+v", state.OrderBook.Bids)
 	}
 }
 
