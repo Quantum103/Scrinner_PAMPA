@@ -194,6 +194,7 @@ type Position struct {
 	FundingMarkUpdatedAt time.Time
 	HighWaterPrice     float64
 	StopPrice          float64
+	LastNotifiedStopPrice float64
 	StopTriggered      bool
 	OpenedAt           time.Time
 	UpdatedAt          time.Time
@@ -222,6 +223,7 @@ type Event struct {
 	Reason            string
 	Direction         string
 	Price             float64
+	PreviousPrice     float64
 	Quantity          float64
 	RequestedQuantity float64
 	Notional          float64
@@ -662,7 +664,8 @@ func (e *Engine) OpenLong(signal strategy.Signal, book Book, now time.Time) Even
 		InitialQuantity: fill.Quantity, RemainingQuantity: fill.Quantity,
 		EntryNotional: notional, InitialMargin: margin, ReservedMargin: margin,
 		Leverage: e.cfg.MaxLeverage, EntryFee: entryFee, RealizedPnL: -entryFee,
-		MarkPrice: book.Bids[0].Price, HighWaterPrice: fill.Price, LowWaterPrice: fill.Price, StopPrice: stopPrice,
+		MarkPrice: book.Bids[0].Price, HighWaterPrice: fill.Price, LowWaterPrice: fill.Price,
+		StopPrice: stopPrice, LastNotifiedStopPrice: stopPrice,
 		OpenedAt: now, UpdatedAt: now, NextFundingTime: funding.NextTime,
 		FundingRate: funding.Rate, FundingMarkPrice: funding.MarkPrice, FundingMarkUpdatedAt: funding.UpdatedAt,
 		FundingInterval: funding.Interval, Contract: contract,
@@ -718,7 +721,21 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 		if position.ExitReason == "" && !position.StopTriggered {
 			candidate := floorToStep(bestBid*(1-e.cfg.TrailingStopPercent/100), position.Contract.TickSize)
 			if candidate > position.StopPrice {
+				previousStop := position.StopPrice
 				position.StopPrice = candidate
+				// Слишком частые мелкие тиковые сдвиги не должны заспамить Telegram.
+				notifyStep := position.LastNotifiedStopPrice * 0.0025
+				if notifyStep <= 0 {
+					notifyStep = position.Contract.TickSize * 10
+				}
+				if candidate-position.LastNotifiedStopPrice >= notifyStep {
+					position.LastNotifiedStopPrice = candidate
+					e.addEvent(Event{
+						Type: "trailing_stop_updated", Symbol: symbol, At: now,
+						PreviousPrice: previousStop, Price: candidate,
+						Reason: "виртуальный Trailing Stop повышен; стоп не опускается при откате",
+					})
+				}
 			}
 		}
 	}
