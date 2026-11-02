@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -31,6 +32,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Paper.InitialDepositUSDT != 10 {
 		t.Errorf("InitialDepositUSDT = %v", cfg.Paper.InitialDepositUSDT)
 	}
+	if cfg.Database.Path != "./data/volume_trader.db" || cfg.Database.BusyTimeout != 5*time.Second {
+		t.Errorf("Database defaults = %+v", cfg.Database)
+	}
 	if MarketCategory != "linear" {
 		t.Errorf("MarketCategory = %q", MarketCategory)
 	}
@@ -40,6 +44,8 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	t.Setenv("DATA_UPDATE_INTERVAL", "750ms")
 	t.Setenv("INSTRUMENT_REFRESH_INTERVAL", "5m")
 	t.Setenv("WS_MAX_DATA_AGE", "8s")
+	t.Setenv("APP_DB_PATH", t.TempDir()+"/paper-test.db")
+	t.Setenv("APP_DB_BUSY_TIMEOUT", "8s")
 	t.Setenv("WS_MAX_SYMBOLS_PER_CONNECTION", "20")
 	t.Setenv("MAX_TRACKED_CONTRACTS", "25")
 	t.Setenv("VIRTUAL_DEPOSIT_USDT", "25.5")
@@ -67,6 +73,9 @@ func TestLoadEnvironmentOverrides(t *testing.T) {
 	}
 	if cfg.Paper.InitialDepositUSDT != 25.5 {
 		t.Errorf("InitialDepositUSDT = %v", cfg.Paper.InitialDepositUSDT)
+	}
+	if filepath.Base(cfg.Database.Path) != "paper-test.db" || cfg.Database.BusyTimeout != 8*time.Second {
+		t.Errorf("Database overrides = %+v", cfg.Database)
 	}
 	if cfg.MarketData.Enabled {
 		t.Error("MarketData.Enabled = true, ожидалось false")
@@ -289,5 +298,22 @@ func TestPaperOrderFlowExitRejectsInvalidThresholds(t *testing.T) {
 	cfg.Paper.OrderFlowMinTakerSellSharePercent = 49
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error when aggressive sell threshold is below 50%")
+	}
+}
+
+
+func TestValidateRejectsEmptyDatabasePathAndInvalidTimeout(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg.Database.Path = "  "
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for empty SQLite path")
+	}
+	cfg.Database.Path = "./data/volume_trader.db"
+	cfg.Database.BusyTimeout = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for non-positive SQLite busy timeout")
 	}
 }

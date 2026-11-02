@@ -24,6 +24,7 @@ type Config struct {
 	Strategy      StrategyConfig
 	EntryStrategy marketstrategy.Config
 	Paper      PaperConfig
+	Database   DatabaseConfig
 	Costs      CostsConfig
 	Telegram   TelegramConfig
 }
@@ -76,6 +77,11 @@ type PaperConfig struct {
 	OrderFlowPriceStallMaxRisePercent   float64
 }
 
+type DatabaseConfig struct {
+	Path        string
+	BusyTimeout time.Duration
+}
+
 type CostsConfig struct {
 	FeeRate     float64
 	SlippageBPS float64
@@ -113,6 +119,10 @@ func Load() (Config, error) {
 			VolumeMultiplier:      2,
 			TrailingStopPercent:   2.5,
 			ReversalConfirmations: 2,
+		},
+		Database: DatabaseConfig{
+			Path: "./data/volume_trader.db",
+			BusyTimeout: 5 * time.Second,
 		},
 		Paper: PaperConfig{
 			Enabled:             true,
@@ -351,6 +361,12 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
+	if cfg.Database.Path, err = stringValue("APP_DB_PATH", cfg.Database.Path); err != nil {
+		return Config{}, err
+	}
+	if cfg.Database.BusyTimeout, err = durationValue("APP_DB_BUSY_TIMEOUT", cfg.Database.BusyTimeout); err != nil {
+		return Config{}, err
+	}
 	if cfg.Telegram.BotToken, err = stringValue("TELEGRAM_BOT_TOKEN", ""); err != nil {
 		return Config{}, err
 	}
@@ -407,6 +423,12 @@ func (c Config) Validate() error {
 	}
 	if err := c.EntryStrategy.Validate(); err != nil {
 		return fmt.Errorf("ENTRY STRATEGY: %w", err)
+	}
+	if strings.TrimSpace(c.Database.Path) == "" {
+		return fmt.Errorf("APP_DB_PATH не должен быть пустым")
+	}
+	if c.Database.BusyTimeout <= 0 {
+		return fmt.Errorf("APP_DB_BUSY_TIMEOUT должен быть положительным")
 	}
 	if err := c.PaperEngineConfig().Validate(); err != nil {
 		return fmt.Errorf("PAPER TRADING: %w", err)

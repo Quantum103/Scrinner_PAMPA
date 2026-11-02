@@ -105,6 +105,11 @@ func NewStoreWithAnalysisAndStrategy(depth int, maxDataAge time.Duration, tradeC
 }
 
 func NewStoreWithAnalysisStrategyAndPaper(depth int, maxDataAge time.Duration, tradeCapacity, seenCapacity int, analysisConfig marketanalysis.Config, strategyConfig marketstrategy.Config, paperConfig marketpaper.Config) (*Store, error) {
+	return NewStoreWithAnalysisStrategyAndPaperRepository(depth, maxDataAge, tradeCapacity, seenCapacity, analysisConfig, strategyConfig, paperConfig, nil)
+}
+
+// NewStoreWithAnalysisStrategyAndPaperRepository подключает общее хранилище приложения.
+func NewStoreWithAnalysisStrategyAndPaperRepository(depth int, maxDataAge time.Duration, tradeCapacity, seenCapacity int, analysisConfig marketanalysis.Config, strategyConfig marketstrategy.Config, paperConfig marketpaper.Config, repository marketpaper.Repository) (*Store, error) {
 	if depth <= 0 || maxDataAge <= 0 || tradeCapacity <= 0 || seenCapacity <= 0 {
 		return nil, errors.New("глубина, срок актуальности и размеры буферов должны быть больше нуля")
 	}
@@ -116,7 +121,7 @@ func NewStoreWithAnalysisStrategyAndPaper(depth int, maxDataAge time.Duration, t
 	if err != nil {
 		return nil, fmt.Errorf("создать стратегию поиска входа: %w", err)
 	}
-	paperEngine, err := marketpaper.New(paperConfig)
+	paperEngine, err := marketpaper.NewWithRepository(paperConfig, repository)
 	if err != nil {
 		return nil, fmt.Errorf("создать Paper Trading Engine: %w", err)
 	}
@@ -367,6 +372,10 @@ func (s *Store) UpdateMarketData(items []bybit.MarketData, at time.Time) {
 
 func (s *Store) PaperSnapshot(now time.Time) marketpaper.AccountSnapshot {
 	return s.paper.Snapshot(now)
+}
+
+func (s *Store) PaperStatistics(now time.Time) marketpaper.PaperStatistics {
+	return s.paper.Snapshot(now).Statistics
 }
 
 func (s *Store) DrainPaperEvents() []marketpaper.Event {

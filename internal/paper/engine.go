@@ -3,6 +3,9 @@
 package paper
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -156,9 +159,24 @@ type Funding struct {
 }
 
 type Position struct {
+	TradeID            string
+	SignalID           string
+	EntryReason        string
+	EntrySignal        strategy.Signal
 	Symbol             string
 	Direction          string
 	EntryPrice         float64
+	ExitPrice          float64
+	EntrySlippageUSDT  float64
+	ExitSlippageUSDT   float64
+	InitialRiskUSDT    float64
+	MFEUSDT            float64
+	MAEUSDT            float64
+	MFEPercent         float64
+	MAEPercent         float64
+	LowWaterPrice      float64
+	ExitNotional       float64
+	RealizedRR         float64
 	InitialQuantity    float64
 	RemainingQuantity  float64
 	ClosedQuantity     float64
@@ -216,11 +234,15 @@ type Event struct {
 	GrossPnL          float64
 	NetPnL            float64
 	RemainingQuantity float64
+	SlippageUSDT      float64
 	FlowSignalCount   int
 	FlowConfirmations int
 }
 
 type AccountSnapshot struct {
+	Mode             string
+	Statistics       PaperStatistics
+	EquityHistory    []EquityPoint
 	Enabled          bool
 	Currency         string
 	Balance          float64
@@ -238,6 +260,15 @@ type AccountSnapshot struct {
 
 type Engine struct {
 	mu            sync.RWMutex
+	repository          Repository
+	initialBalance      float64
+	equityHistory       []EquityPoint
+	pendingEquityPoints []EquityPoint
+	processedSignals    map[string]struct{}
+	pendingSignalIDs    map[string]struct{}
+	pendingClosedTrades []Position
+	storageErr          error
+	lastEquityRecordAt  time.Time
 	cfg           Config
 	balance       float64
 	realizedPnL   float64
@@ -252,16 +283,147 @@ type Engine struct {
 }
 
 func New(cfg Config) (*Engine, error) {
+	return NewWithRepository(cfg, nil)
+}
+
+// NewWithRepository восстанавливает единый Paper Trading account, открытые позиции,
+// закрытые сделки и обработанные сигналы до начала приёма рыночных обновлений.
+func NewWithRepository(cfg Config, repository Repository) (*Engine, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Engine{
-		cfg:       cfg,
-		balance:   cfg.InitialBalanceUSDT,
-		contracts: make(map[string]Contract),
-		funding:   make(map[string]Funding),
-		positions: make(map[string]*Position),
-	}, nil
+	e := &Engine{
+		cfg: cfg, repository: repository,
+		balance: cfg.InitialBalanceUSDT, initialBalance: cfg.InitialBalanceUSDT,
+		contracts: make(map[string]Contract), funding: make(map[string]Funding),
+		positions: make(map[string]*Position), processedSignals: make(map[string]struct{}),
+		pendingSignalIDs: make(map[string]struct{}),
+	}
+	if repository == nil {
+		e.recordEquityLocked(time.Now().UTC(), true)
+		return e, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	state, err := repository.Load(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("восстановить Paper Trading из SQLite: %w", err)
+	}
+	if !state.Found {
+		now := time.Now().UTC()
+		e.recordEquityLocked(now, true)
+		if err := e.persistLocked(now); err != nil {
+			return nil, fmt.Errorf("инициализировать Paper Trading account в SQLite: %w", err)
+		}
+		return e, nil
+	}
+	if !finitePositive(state.InitialBalanceUSDT) || !finite(state.Balance) {
+		return nil, errors.New("SQLite содержит некорректный Paper Trading account")
+	}
+	if len(state.OpenPositions) > cfg.MaxOpenPositions {
+		return nil, fmt.Errorf("SQLite содержит %d открытых позиций, конфигурация разрешает %d", len(state.OpenPositions), cfg.MaxOpenPositions)
+	}
+	e.initialBalance = state.InitialBalanceUSDT
+	e.balance = state.Balance
+	e.realizedPnL = state.RealizedPnL
+	e.totalFees = state.TotalFees
+	e.netFunding = state.NetFunding
+	e.closedTrades = append([]Position(nil), state.ClosedTrades...)
+	e.equityHistory = append([]EquityPoint(nil), state.EquityHistory...)
+	if len(e.equityHistory) > 0 {
+		e.lastEquityRecordAt = e.equityHistory[len(e.equityHistory)-1].At
+	}
+	for i := range state.OpenPositions {
+		position := state.OpenPositions[i]
+		if position.Symbol == "" || !finitePositive(position.RemainingQuantity) || position.TradeID == "" {
+			return nil, errors.New("SQLite содержит некорректную открытую Paper Trading позицию")
+		}
+		copy := position
+		e.positions[position.Symbol] = &copy
+	}
+	for _, id := range state.ProcessedSignalIDs {
+		if id != "" {
+			e.processedSignals[id] = struct{}{}
+		}
+	}
+	e.updatedAt = state.UpdatedAt
+	return e, nil
+}
+
+func (e *Engine) persistentStateLocked(now time.Time) PersistentState {
+	positions := make([]Position, 0, len(e.positions))
+	for _, position := range e.positions {
+		positions = append(positions, *position)
+	}
+	closed := append([]Position(nil), e.pendingClosedTrades...)
+	equity := append([]EquityPoint(nil), e.pendingEquityPoints...)
+	signals := make([]string, 0, len(e.pendingSignalIDs))
+	for id := range e.pendingSignalIDs {
+		signals = append(signals, id)
+	}
+	return PersistentState{
+		Found: true, InitialBalanceUSDT: e.initialBalance, Balance: e.balance,
+		RealizedPnL: e.realizedPnL, TotalFees: e.totalFees, NetFunding: e.netFunding,
+		OpenPositions: positions, ClosedTrades: closed, EquityHistory: equity,
+		ProcessedSignalIDs: signals, UpdatedAt: now,
+	}
+}
+
+func (e *Engine) persistLocked(now time.Time) error {
+	if e.repository == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := e.repository.Save(ctx, e.persistentStateLocked(now)); err != nil {
+		e.storageErr = err
+		e.addEvent(Event{Type: "persistence_error", At: now, Reason: "не удалось атомарно сохранить Paper Trading в SQLite: " + err.Error()})
+		return err
+	}
+	e.storageErr = nil
+	e.pendingClosedTrades = nil
+	e.pendingEquityPoints = nil
+	e.pendingSignalIDs = make(map[string]struct{})
+	return nil
+}
+
+func (e *Engine) recordEquityLocked(now time.Time, force bool) {
+	if now.IsZero() {
+		return
+	}
+	if !e.lastEquityRecordAt.IsZero() && now.Before(e.lastEquityRecordAt) {
+		return
+	}
+	if !force && !e.lastEquityRecordAt.IsZero() && now.Sub(e.lastEquityRecordAt) < 5*time.Second {
+		return
+	}
+	unrealized := e.unrealizedPnLLocked()
+	point := EquityPoint{
+		At: now.UTC(), Balance: e.balance, Equity: e.balance + unrealized,
+		RealizedPnL: e.realizedPnL, UnrealizedPnL: unrealized,
+	}
+	if len(e.equityHistory) > 0 && now.Equal(e.lastEquityRecordAt) {
+		e.equityHistory[len(e.equityHistory)-1] = point
+		if len(e.pendingEquityPoints) > 0 && e.pendingEquityPoints[len(e.pendingEquityPoints)-1].At.Equal(point.At) {
+			e.pendingEquityPoints[len(e.pendingEquityPoints)-1] = point
+		} else {
+			e.pendingEquityPoints = append(e.pendingEquityPoints, point)
+		}
+	} else {
+		e.equityHistory = append(e.equityHistory, point)
+		e.pendingEquityPoints = append(e.pendingEquityPoints, point)
+	}
+	e.lastEquityRecordAt = point.At
+}
+
+func signalID(signal strategy.Signal) string {
+	return fmt.Sprintf("%s|%s|%d|%s", signal.Symbol, signal.Direction,
+		signal.Time.UTC().UnixNano(), strconv.FormatFloat(signal.Price, 'g', -1, 64))
+}
+
+func tradeIDForSignal(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])
 }
 
 // UpdateMarketData сохраняет только публичные спецификации контрактов и funding-данные REST-тикеров.
@@ -309,6 +471,10 @@ func (e *Engine) UpdateMarketData(items []bybit.MarketData, now time.Time) {
 		}
 	}
 	e.updatedAt = now
+	if len(e.positions) > 0 || e.storageErr != nil {
+		e.recordEquityLocked(now, false)
+		_ = e.persistLocked(now)
+	}
 }
 
 func contractFromInstrument(item bybit.Instrument) (Contract, error) {
@@ -368,6 +534,18 @@ func (e *Engine) OpenLong(signal strategy.Signal, book Book, now time.Time) Even
 	if signal.Direction != "LONG" {
 		return reject("поддерживается только LONG")
 	}
+	if signal.Time.IsZero() || now.Before(signal.Time) || now.Sub(signal.Time) > e.cfg.MaxBookAge {
+		return reject("сигнал устарел")
+	}
+	if e.storageErr != nil {
+		if err := e.persistLocked(now); err != nil {
+			return reject("вход заблокирован: не удалось восстановить согласованное сохранение в SQLite")
+		}
+	}
+	id := signalID(signal)
+	if _, processed := e.processedSignals[id]; processed {
+		return reject("сигнал уже был обработан; повторный вход по нему запрещён")
+	}
 	if _, exists := e.positions[signal.Symbol]; exists {
 		return reject("по инструменту уже есть открытая позиция; усреднение запрещено")
 	}
@@ -376,9 +554,6 @@ func (e *Engine) OpenLong(signal strategy.Signal, book Book, now time.Time) Even
 	}
 	if !bookUsable(book, now, e.cfg.MaxBookAge) {
 		return reject("стакан отсутствует, неполон или устарел")
-	}
-	if signal.Time.IsZero() || now.Before(signal.Time) || now.Sub(signal.Time) > e.cfg.MaxBookAge {
-		return reject("сигнал устарел")
 	}
 	contract, exists := e.contracts[signal.Symbol]
 	if !exists {
@@ -481,11 +656,13 @@ func (e *Engine) OpenLong(signal strategy.Signal, book Book, now time.Time) Even
 	}
 
 	position := &Position{
+		TradeID: tradeIDForSignal(id), SignalID: id, EntryReason: signal.Reason, EntrySignal: signal,
 		Symbol: signal.Symbol, Direction: "LONG",
-		EntryPrice: fill.Price, InitialQuantity: fill.Quantity, RemainingQuantity: fill.Quantity,
+		EntryPrice: fill.Price, EntrySlippageUSDT: fill.SlippageUSDT, InitialRiskUSDT: risk,
+		InitialQuantity: fill.Quantity, RemainingQuantity: fill.Quantity,
 		EntryNotional: notional, InitialMargin: margin, ReservedMargin: margin,
 		Leverage: e.cfg.MaxLeverage, EntryFee: entryFee, RealizedPnL: -entryFee,
-		MarkPrice: book.Bids[0].Price, HighWaterPrice: fill.Price, StopPrice: stopPrice,
+		MarkPrice: book.Bids[0].Price, HighWaterPrice: fill.Price, LowWaterPrice: fill.Price, StopPrice: stopPrice,
 		OpenedAt: now, UpdatedAt: now, NextFundingTime: funding.NextTime,
 		FundingRate: funding.Rate, FundingMarkPrice: funding.MarkPrice, FundingMarkUpdatedAt: funding.UpdatedAt,
 		FundingInterval: funding.Interval, Contract: contract,
@@ -494,6 +671,8 @@ func (e *Engine) OpenLong(signal strategy.Signal, book Book, now time.Time) Even
 	e.realizedPnL -= entryFee
 	e.totalFees += entryFee
 	e.positions[signal.Symbol] = position
+	e.processedSignals[id] = struct{}{}
+	e.pendingSignalIDs[id] = struct{}{}
 	e.updatedAt = now
 
 	eventType := "position_opened"
@@ -506,10 +685,12 @@ func (e *Engine) OpenLong(signal strategy.Signal, book Book, now time.Time) Even
 		Type: eventType, Symbol: signal.Symbol, At: now, Direction: "LONG", Reason: reason,
 		Price: fill.Price, Quantity: fill.Quantity, RequestedQuantity: requestedQty,
 		Notional: notional, Margin: margin, Leverage: e.cfg.MaxLeverage,
-		Fee: entryFee, RiskUSDT: risk, RiskPercent: riskPercent,
+		Fee: entryFee, SlippageUSDT: fill.SlippageUSDT, RiskUSDT: risk, RiskPercent: riskPercent,
 		RemainingQuantity: position.RemainingQuantity,
 	}
 	e.addEvent(event)
+	e.recordEquityLocked(now, true)
+	_ = e.persistLocked(now)
 	return event
 }
 
@@ -520,6 +701,9 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 	defer e.mu.Unlock()
 	position := e.positions[symbol]
 	if position == nil {
+		if e.storageErr != nil {
+			_ = e.persistLocked(now)
+		}
 		return nil
 	}
 	if !bookUsable(book, now, e.cfg.MaxBookAge) {
@@ -529,28 +713,38 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 	bestBid := book.Bids[0].Price
 	position.MarkPrice = bestBid
 	e.applyDueFunding(position, now)
-	position.UnrealizedPnL = (bestBid - position.EntryPrice) * position.RemainingQuantity
-	position.UpdatedAt = now
-
-	if position.ExitReason == "" && !position.StopTriggered {
-		if bestBid > position.HighWaterPrice {
-			position.HighWaterPrice = bestBid
+	if bestBid > position.HighWaterPrice {
+		position.HighWaterPrice = bestBid
+		if position.ExitReason == "" && !position.StopTriggered {
 			candidate := floorToStep(bestBid*(1-e.cfg.TrailingStopPercent/100), position.Contract.TickSize)
 			if candidate > position.StopPrice {
 				position.StopPrice = candidate
 			}
 		}
-		if bestBid <= position.StopPrice {
-			position.StopTriggered = true
-			position.ExitReason = "сработал виртуальный Trailing Stop"
-		}
+	}
+	if position.LowWaterPrice <= 0 || bestBid < position.LowWaterPrice {
+		position.LowWaterPrice = bestBid
+	}
+	position.MFEUSDT = math.Max(0, position.HighWaterPrice-position.EntryPrice) * position.InitialQuantity
+	position.MAEUSDT = math.Max(0, position.EntryPrice-position.LowWaterPrice) * position.InitialQuantity
+	position.MFEPercent = math.Max(0, (position.HighWaterPrice-position.EntryPrice)/position.EntryPrice*100)
+	position.MAEPercent = math.Max(0, (position.EntryPrice-position.LowWaterPrice)/position.EntryPrice*100)
+	position.UnrealizedPnL = (bestBid - position.EntryPrice) * position.RemainingQuantity
+	position.UpdatedAt = now
+
+	if bestBid <= position.StopPrice && position.ExitReason == "" {
+		position.StopTriggered = true
+		position.ExitReason = "сработал виртуальный Trailing Stop"
 	}
 	// После частичного исполнения любой причины выхода продолжаем закрывать остаток
 	// по последующим актуальным Bid, не теряя первоначальную причину.
-	if position.ExitReason != "" {
+	closed := position.ExitReason != ""
+	if closed {
 		e.closeLocked(position, book, now, position.ExitReason)
 	}
 	e.updatedAt = now
+	e.recordEquityLocked(now, closed)
+	_ = e.persistLocked(now)
 	return nil
 }
 
@@ -568,13 +762,19 @@ func (e *Engine) CloseLong(symbol string, book Book, now time.Time, reason strin
 	if !bookUsable(book, now, e.cfg.MaxBookAge) {
 		event := Event{Type: "close_rejected", Symbol: symbol, At: now, Reason: "невозможно закрыть позицию: стакан отсутствует, неполон или устарел"}
 		e.addEvent(event)
+		if e.storageErr != nil {
+			_ = e.persistLocked(now)
+		}
 		return event
 	}
 	if reason == "" {
 		reason = "ручное виртуальное закрытие"
 	}
+	position.ExitReason = reason
 	event := e.closeLocked(position, book, now, reason)
 	e.updatedAt = now
+	e.recordEquityLocked(now, true)
+	_ = e.persistLocked(now)
 	return event
 }
 
@@ -587,6 +787,10 @@ func (e *Engine) closeLocked(position *Position, book Book, now time.Time, reaso
 	}
 	closedQty := math.Min(fill.Quantity, position.RemainingQuantity)
 	exitNotional := closedQty * fill.Price
+	slippageRatio := closedQty / fill.Quantity
+	position.ExitNotional += exitNotional
+	position.ExitPrice = position.ExitNotional / (position.ClosedQuantity + closedQty)
+	position.ExitSlippageUSDT += fill.SlippageUSDT * slippageRatio
 	exitFee := exitNotional * e.cfg.FeeRate
 	grossPnL := (fill.Price - position.EntryPrice) * closedQty
 	netIncrement := grossPnL - exitFee
@@ -609,11 +813,13 @@ func (e *Engine) closeLocked(position *Position, book Book, now time.Time, reaso
 		position.UnrealizedPnL = 0
 		position.ClosedAt = now
 		position.CloseReason = reason
+		position.ExitReason = reason
+		if position.InitialRiskUSDT > 0 {
+			position.RealizedRR = position.RealizedPnL / position.InitialRiskUSDT
+		}
 		eventType = "position_closed"
 		e.closedTrades = append(e.closedTrades, *position)
-		if len(e.closedTrades) > 100 {
-			e.closedTrades = append([]Position(nil), e.closedTrades[len(e.closedTrades)-100:]...)
-		}
+		e.pendingClosedTrades = append(e.pendingClosedTrades, *position)
 		delete(e.positions, position.Symbol)
 	}
 	eventNetPnL := netIncrement
@@ -623,7 +829,8 @@ func (e *Engine) closeLocked(position *Position, book Book, now time.Time, reaso
 	event := Event{
 		Type: eventType, Symbol: position.Symbol, At: now, Direction: "LONG", Reason: reason,
 		Price: fill.Price, Quantity: closedQty, Notional: exitNotional,
-		Fee: exitFee, GrossPnL: grossPnL, NetPnL: eventNetPnL,
+		Fee: exitFee, SlippageUSDT: fill.SlippageUSDT * slippageRatio,
+		GrossPnL: grossPnL, NetPnL: eventNetPnL,
 		RemainingQuantity: position.RemainingQuantity,
 	}
 	if eventType == "position_partially_closed" {
@@ -678,6 +885,8 @@ func (e *Engine) Snapshot(now time.Time) AccountSnapshot {
 	}
 	closedTrades := append([]Position(nil), e.closedTrades...)
 	return AccountSnapshot{
+		Mode: "Paper Trading", Statistics: calculateStatistics(e.closedTrades, positions, e.equityHistory, e.totalFees, e.netFunding),
+		EquityHistory: append([]EquityPoint(nil), e.equityHistory...),
 		Enabled: e.cfg.Enabled, Currency: "USDT",
 		Balance: e.balance, Equity: equity, FreeMargin: equity - reserved,
 		ReservedMargin: reserved, UnrealizedPnL: unrealized,
@@ -718,8 +927,10 @@ func (e *Engine) addEvent(event Event) {
 }
 
 type fillResult struct {
-	Quantity float64
-	Price    float64
+	Quantity      float64
+	Price         float64
+	BookVWAP      float64
+	SlippageUSDT  float64
 }
 
 func walkBook(levels []Level, requested float64, buy bool, slippageBPS float64) fillResult {
@@ -751,7 +962,10 @@ func walkBook(levels []Level, requested float64, buy bool, slippageBPS float64) 
 	} else {
 		vwap *= 1 - slippage
 	}
-	return fillResult{Quantity: filled, Price: vwap}
+	return fillResult{
+		Quantity: filled, Price: vwap, BookVWAP: quote / filled,
+		SlippageUSDT: math.Abs(vwap-(quote/filled))*filled,
+	}
 }
 
 func bookUsable(book Book, now time.Time, maxAge time.Duration) bool {

@@ -16,7 +16,13 @@ func (e *Engine) UpdateOrderFlow(symbol string, snapshot marketanalysis.Snapshot
 	defer e.mu.Unlock()
 
 	position := e.positions[symbol]
-	if position == nil || !e.cfg.OrderFlowExitEnabled || position.ExitReason != "" {
+	if position == nil {
+		if e.storageErr != nil {
+			_ = e.persistLocked(now)
+		}
+		return nil
+	}
+	if !e.cfg.OrderFlowExitEnabled || position.ExitReason != "" {
 		return nil
 	}
 
@@ -25,6 +31,7 @@ func (e *Engine) UpdateOrderFlow(symbol string, snapshot marketanalysis.Snapshot
 		!withinOrderFlowAge(snapshot.UpdatedAt, now, e.cfg.MaxBookAge) ||
 		!validOrderFlowSnapshot(snapshot) {
 		resetOrderFlowConfirmation(position)
+		_ = e.persistLocked(now)
 		return nil
 	}
 
@@ -42,6 +49,7 @@ func (e *Engine) UpdateOrderFlow(symbol string, snapshot marketanalysis.Snapshot
 	if !position.HasOrderFlowObservation {
 		rememberOrderFlowObservation(position, snapshot, now)
 		position.UpdatedAt = now
+		_ = e.persistLocked(now)
 		return nil
 	}
 
@@ -88,6 +96,7 @@ func (e *Engine) UpdateOrderFlow(symbol string, snapshot marketanalysis.Snapshot
 	position.UpdatedAt = now
 
 	if position.OrderFlowConfirmations < e.cfg.OrderFlowConsecutiveIntervals {
+		_ = e.persistLocked(now)
 		return nil
 	}
 
@@ -110,6 +119,9 @@ func (e *Engine) UpdateOrderFlow(symbol string, snapshot marketanalysis.Snapshot
 
 	e.applyDueFunding(position, now)
 	closeEvent := e.closeLocked(position, book, now, reason)
+	e.updatedAt = now
+	e.recordEquityLocked(now, true)
+	_ = e.persistLocked(now)
 	return []Event{trigger, closeEvent}
 }
 

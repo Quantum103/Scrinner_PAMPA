@@ -11,6 +11,7 @@ import (
 	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/config"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/market"
+	marketpaper "github.com/Quantum103/Scrinner_PAMPA/internal/paper"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/stream"
 )
 
@@ -22,6 +23,13 @@ func main() {
 	}
 
 	logger := newLogger(cfg.LogLevel)
+	repository, err := marketpaper.OpenSQLiteRepository(cfg.Database.Path, cfg.Database.BusyTimeout)
+	if err != nil {
+		logger.Error("Не удалось открыть общую SQLite базу", "ошибка", err, "путь", cfg.Database.Path)
+		os.Exit(1)
+	}
+	defer repository.Close()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -31,6 +39,8 @@ func main() {
 		"категория", config.MarketCategory,
 		"направление", "только LONG",
 		"виртуальный_депозит_USDT", cfg.Paper.InitialDepositUSDT,
+		"режим_счёта", "Paper Trading",
+		"sqlite_база", cfg.Database.Path,
 		"получение_рыночных_данных", cfg.MarketData.Enabled,
 	)
 
@@ -52,8 +62,10 @@ func main() {
 	wsConfig.Analysis = cfg.Analysis
 	wsConfig.Strategy = cfg.EntryStrategy
 	wsConfig.Paper = cfg.PaperEngineConfig()
+	wsConfig.PaperRepository = repository
 	wsManager, err := stream.NewManager(wsConfig, logger)
 	if err != nil {
+		_ = repository.Close()
 		logger.Error("Некорректная конфигурация WebSocket", "ошибка", err)
 		os.Exit(1)
 	}
