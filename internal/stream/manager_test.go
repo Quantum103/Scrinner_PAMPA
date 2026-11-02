@@ -244,3 +244,55 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	}
 	t.Fatal("условие не выполнено до истечения таймаута")
 }
+
+
+func TestReadLoopResubscribesOnlyBrokenOrderbookTopic(t *testing.T) {
+	manager := testManager(t)
+	manager.store.StartSession([]string{"BTCUSDT", "ETHUSDT"})
+	conn := newFakeWireConn()
+	now := time.Now()
+
+	delta := withFreshTimestamp(`{"topic":"orderbook.50.BTCUSDT","type":"delta","ts":1,"data":{"s":"BTCUSDT","b":[["100","2"]],"a":[],"u":10,"seq":10}}`, now)
+	snapshot := withFreshTimestamp(`{"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1,"data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","1"]],"u":10,"seq":10}}`, now.Add(time.Millisecond))
+	trade := withFreshTimestamp(`{"topic":"publicTrade.ETHUSDT","type":"snapshot","ts":1,"data":[{"T":1,"s":"ETHUSDT","S":"Buy","v":"0.1","p":"200","i":"eth-trade-1"}]}`, now.Add(2*time.Millisecond))
+
+	conn.reads <- fakeRead{messageType: 1, payload: delta}
+	conn.reads <- fakeRead{messageType: 1, payload: snapshot}
+	conn.reads <- fakeRead{messageType: 1, payload: trade}
+	_ = conn.Close()
+
+	writer := &serializedWriter{conn: conn}
+	err := manager.readLoop(context.Background(), conn, writer)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("readLoop error = %v, want EOF after all queued messages", err)
+	}
+
+	writes := conn.writeSnapshot()
+	if len(writes) != 2 {
+		t.Fatalf("число команд повторной подписки = %d, ожидалось 2: %s", len(writes), writes)
+	}
+	for i, expectedOperation := range []string{"unsubscribe", "subscribe"} {
+		var command struct {
+			Operation string   `json:"op"`
+			Arguments []string `json:"args"`
+		}
+		if err := json.Unmarshal(writes[i], &command); err != nil {
+			t.Fatalf("команда %d не является JSON: %v", i, err)
+		}
+		if command.Operation != expectedOperation {
+			t.Errorf("команда %d op = %q, ожидалось %q", i, command.Operation, expectedOperation)
+		}
+		if len(command.Arguments) != 1 || command.Arguments[0] != "orderbook.50.BTCUSDT" {
+			t.Errorf("команда %d затронула не только сломанный стакан: %+v", i, command.Arguments)
+		}
+	}
+
+	btc, ok := manager.store.Snapshot("BTCUSDT", now.Add(time.Second))
+	if !ok || !btc.OrderBook.Valid {
+		t.Fatalf("BTCUSDT snapshot не восстановлен: %+v", btc.OrderBook)
+	}
+	eth, ok := manager.store.Snapshot("ETHUSDT", now.Add(time.Second))
+	if !ok || eth.LastTrade == nil || eth.LastTrade.TradeID != "eth-trade-1" {
+		t.Fatalf("поток ETHUSDT остановился из-за ошибки BTCUSDT: %+v", eth)
+	}
+}
