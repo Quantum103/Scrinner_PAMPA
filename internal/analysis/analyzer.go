@@ -316,10 +316,11 @@ func (a *Analyzer) AddTrade(symbol string, trade Trade) error {
 			ErrTradeTimestampOutOfRange, trade.Time.Format(time.RFC3339Nano), trade.ReceivedAt.Format(time.RFC3339Nano), a.maxDataAge)
 	}
 	if !state.lastTradeTime.IsZero() && trade.Time.Before(state.lastTradeTime.Add(-a.maxDataAge)) {
+		previousTradeTime := state.lastTradeTime
 		state = newSymbolState(trade.ReceivedAt, true, "обнаружена старая или переставленная сделка")
 		a.states[symbol] = state
 		return fmt.Errorf("%w: время сделки %s, предыдущая сделка %s, допуск %s",
-			ErrTradeOutOfOrder, trade.Time.Format(time.RFC3339Nano), state.lastTradeTime.Format(time.RFC3339Nano), a.maxDataAge)
+			ErrTradeOutOfOrder, trade.Time.Format(time.RFC3339Nano), previousTradeTime.Format(time.RFC3339Nano), a.maxDataAge)
 	}
 
 	bucketKey := trade.Time.UnixNano() / int64(analysisBucketSize)
