@@ -323,6 +323,7 @@ func (m *Manager) SetSymbols(symbols []string) {
 func (m *Manager) Run(ctx context.Context) {
 	m.mu.Lock()
 	m.running = true
+	initialSymbols := append([]string(nil), m.symbols...)
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
@@ -330,59 +331,361 @@ func (m *Manager) Run(ctx context.Context) {
 		m.mu.Unlock()
 	}()
 
-	var shardCancel context.CancelFunc
+	runtimes := make(map[int]*managedShard)
+	nextShardID := 0
 	var shardWG sync.WaitGroup
 
-	restart := func(symbols []string) {
-		if shardCancel != nil {
-			shardCancel()
-			shardWG.Wait()
-		}
+	applySymbols := func(rawSymbols []string) {
+		symbols := normalizeSymbols(rawSymbols)
 		m.store.MarkRemoved(symbols)
-		if len(symbols) == 0 {
-			m.logger.Info("Нет инструментов для WebSocket-подписок")
-			shardCancel = nil
-			return
+		assignments, nextID := stableShardAssignments(
+			runtimes, symbols, m.cfg.MaxSymbolsPerConnection, nextShardID,
+		)
+		nextShardID = nextID
+
+		for id, shardSymbols := range assignments {
+			if runtime, exists := runtimes[id]; exists {
+				runtime.setSymbols(shardSymbols)
+				continue
+			}
+
+			shardCtx, cancel := context.WithCancel(ctx)
+			runtime := newManagedShard(shardSymbols, cancel)
+			runtimes[id] = runtime
+			shardWG.Add(1)
+			go func(runtime *managedShard) {
+				defer shardWG.Done()
+				m.runManagedShard(shardCtx, runtime)
+			}(runtime)
 		}
 
-		shardCtx, cancel := context.WithCancel(ctx)
-		shardCancel = cancel
-		shards := splitSymbols(symbols, m.cfg.MaxSymbolsPerConnection)
-		m.mu.Lock()
-		m.totalShards = len(shards)
-		m.shardConnections = make(map[string]bool, len(shards))
-		m.mu.Unlock()
-		m.logger.Info("Запуск публичных WebSocket-соединений Bybit",
-			"инструментов", len(symbols),
-			"соединений", len(shards),
-			"глубина_стакана", m.cfg.Depth,
-		)
-		for _, shard := range shards {
-			shard := append([]string(nil), shard...)
-			shardWG.Add(1)
-			go func() {
-				defer shardWG.Done()
-				m.runShard(shardCtx, shard)
-			}()
+		for id, runtime := range runtimes {
+			if _, retained := assignments[id]; retained {
+				continue
+			}
+			previous := runtime.snapshotSymbols()
+			m.setShardConnection(previous, false, nil)
+			runtime.cancel()
+			delete(runtimes, id)
 		}
+
+		m.mu.Lock()
+		m.totalShards = len(runtimes)
+		if len(runtimes) == 0 {
+			m.shardConnections = make(map[string]bool)
+		}
+		m.mu.Unlock()
+
+		m.logger.Info("Обновлён набор подробных WebSocket-подписок Bybit",
+			"инструментов", len(symbols),
+			"соединений", len(runtimes),
+			"лимит_инструментов_на_соединение", m.cfg.MaxSymbolsPerConnection,
+		)
 	}
 
+	applySymbols(initialSymbols)
 	for {
 		select {
 		case <-ctx.Done():
-			if shardCancel != nil {
-				shardCancel()
-				shardWG.Wait()
+			for _, runtime := range runtimes {
+				previous := runtime.snapshotSymbols()
+				m.setShardConnection(previous, false, nil)
+				runtime.cancel()
 			}
+			shardWG.Wait()
+			m.mu.Lock()
+			m.totalShards = 0
+			m.shardConnections = make(map[string]bool)
+			m.mu.Unlock()
 			return
 		case <-m.updates:
 			m.mu.Lock()
 			symbols := append([]string(nil), m.symbols...)
 			m.mu.Unlock()
-			restart(symbols)
+			applySymbols(symbols)
 		}
 	}
 }
+
+// managedShard сохраняет состав символов одного соединения, не разрывая его при изменении списка.
+type managedShard struct {
+	mu      sync.RWMutex
+	symbols []string
+	updates chan struct{}
+	cancel  context.CancelFunc
+}
+
+func newManagedShard(symbols []string, cancel context.CancelFunc) *managedShard {
+	return &managedShard{
+		symbols: normalizeSymbols(symbols),
+		updates: make(chan struct{}, 1),
+		cancel:  cancel,
+	}
+}
+
+func (s *managedShard) setSymbols(symbols []string) {
+	normalized := normalizeSymbols(symbols)
+	s.mu.Lock()
+	if equalStrings(s.symbols, normalized) {
+		s.mu.Unlock()
+		return
+	}
+	s.symbols = normalized
+	s.mu.Unlock()
+	select {
+	case s.updates <- struct{}{}:
+	default:
+	}
+}
+
+func (s *managedShard) snapshotSymbols() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.symbols...)
+}
+
+// stableShardAssignments по возможности сохраняет старое размещение символов.
+// Новые инструменты распределяются в наименее заполненные сегменты.
+func stableShardAssignments(
+	runtimes map[int]*managedShard,
+	desired []string,
+	maxPerShard int,
+	nextID int,
+) (map[int][]string, int) {
+	assignments := make(map[int][]string, len(runtimes)+1)
+	remaining := make(map[string]struct{}, len(desired))
+	for _, symbol := range desired {
+		remaining[symbol] = struct{}{}
+	}
+
+	ids := make([]int, 0, len(runtimes))
+	for id := range runtimes {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	for _, id := range ids {
+		for _, symbol := range runtimes[id].snapshotSymbols() {
+			if _, wanted := remaining[symbol]; !wanted {
+				continue
+			}
+			if len(assignments[id]) >= maxPerShard {
+				continue
+			}
+			assignments[id] = append(assignments[id], symbol)
+			delete(remaining, symbol)
+		}
+	}
+
+	newSymbols := make([]string, 0, len(remaining))
+	for symbol := range remaining {
+		newSymbols = append(newSymbols, symbol)
+	}
+	sort.Strings(newSymbols)
+	for _, symbol := range newSymbols {
+		targetID := -1
+		targetLoad := maxPerShard + 1
+		for _, id := range ids {
+			load := len(assignments[id])
+			if load < maxPerShard && load < targetLoad {
+				targetID = id
+				targetLoad = load
+			}
+		}
+		if targetID == -1 {
+			targetID = nextID
+			nextID++
+			ids = append(ids, targetID)
+			assignments[targetID] = nil
+		}
+		assignments[targetID] = append(assignments[targetID], symbol)
+	}
+	for id := range assignments {
+		sort.Strings(assignments[id])
+		if len(assignments[id]) == 0 {
+			delete(assignments, id)
+		}
+	}
+	return assignments, nextID
+}
+
+func (m *Manager) runManagedShard(ctx context.Context, runtime *managedShard) {
+	backoff := m.cfg.ReconnectMin
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if len(runtime.snapshotSymbols()) == 0 {
+			return
+		}
+		err := m.connectAndServeDynamic(ctx, runtime)
+		symbols := runtime.snapshotSymbols()
+		m.store.MarkDisconnected(symbols)
+		if ctx.Err() != nil {
+			return
+		}
+		m.setShardConnection(symbols, false, err)
+		m.logger.Warn("WebSocket Bybit отключён; выполняется переподключение",
+			"инструментов", len(symbols),
+			"ошибка", err,
+			"повтор_через", backoff,
+		)
+		if err := waitContext(ctx, backoff); err != nil {
+			return
+		}
+		backoff *= 2
+		if backoff > m.cfg.ReconnectMax {
+			backoff = m.cfg.ReconnectMax
+		}
+	}
+}
+
+// connectAndServeDynamic управляет подписками на живом соединении.
+// Изменение рейтинга приводит к subscribe/unsubscribe только изменившихся тем.
+func (m *Manager) connectAndServeDynamic(ctx context.Context, runtime *managedShard) error {
+	conn, err := m.connector.Dial(ctx, m.cfg.URL)
+	if err != nil {
+		return fmt.Errorf("подключиться к Bybit: %w", err)
+	}
+	defer conn.Close()
+	writer := &serializedWriter{conn: conn}
+	conn.SetReadLimit(maxWebSocketMessageSize)
+	_ = conn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(m.cfg.ReadTimeout))
+	})
+
+	symbols := runtime.snapshotSymbols()
+	if len(symbols) == 0 {
+		return errors.New("пустой набор символов WebSocket-сегмента")
+	}
+	for _, batch := range buildSubscriptionBatches(symbols, m.cfg.Depth, m.cfg.MaxArgsPerSubscribe) {
+		if err := writer.writeJSON(batch); err != nil {
+			return fmt.Errorf("отправить начальную подписку Bybit: %w", err)
+		}
+		if err := waitContext(ctx, subscriptionBatchPause); err != nil {
+			return err
+		}
+	}
+	m.store.StartSession(symbols)
+	m.setShardConnection(symbols, true, nil)
+	m.logger.Info("Публичный WebSocket Bybit подключён; подписки отправлены",
+		"инструментов", len(symbols),
+		"тем_подписки", len(symbols)*2,
+	)
+
+	sessionCtx, cancel := context.WithCancel(ctx)
+	heartbeatDone := make(chan struct{})
+	heartbeatErr := make(chan error, 1)
+	go m.heartbeat(sessionCtx, cancel, writer, heartbeatDone, heartbeatErr)
+
+	closeOnCancel := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-sessionCtx.Done():
+			_ = conn.WriteControl(webSocketCloseMessage, []byte{0x03, 0xE8}, time.Now().Add(time.Second))
+			_ = conn.Close()
+		case <-closeOnCancel:
+		}
+	}()
+
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- m.readLoop(sessionCtx, conn, writer)
+	}()
+
+	defer func() {
+		cancel()
+		close(closeOnCancel)
+		<-watcherDone
+		<-heartbeatDone
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case readErr := <-readDone:
+			if ctx.Err() == nil && readErr == nil {
+				return errors.New("соединение WebSocket завершилось без причины")
+			}
+			return readErr
+		case heartbeatFailure := <-heartbeatErr:
+			return heartbeatFailure
+		case <-runtime.updates:
+			desired := runtime.snapshotSymbols()
+			if equalStrings(symbols, desired) {
+				continue
+			}
+			added, removed := diffSymbols(symbols, desired)
+			if len(removed) > 0 {
+				topics := subscriptionTopics(removed, m.cfg.Depth)
+				for _, batch := range buildOperationBatches("unsubscribe", topics, m.cfg.MaxArgsPerSubscribe) {
+					if err := writer.writeJSON(batch); err != nil {
+						return fmt.Errorf("отменить старые подписки Bybit: %w", err)
+					}
+				}
+			}
+			if len(added) > 0 {
+				if len(removed) > 0 {
+					if err := waitContext(ctx, subscriptionBatchPause); err != nil {
+						return err
+					}
+				}
+				topics := subscriptionTopics(added, m.cfg.Depth)
+				for _, batch := range buildOperationBatches("subscribe", topics, m.cfg.MaxArgsPerSubscribe) {
+					if err := writer.writeJSON(batch); err != nil {
+						return fmt.Errorf("добавить новые подписки Bybit: %w", err)
+					}
+				}
+				m.store.StartSession(added)
+			}
+			m.replaceShardConnection(symbols, desired)
+			m.logger.Info("Обновлены темы публичного WebSocket без переподключения",
+				"добавлено_символов", len(added),
+				"удалено_символов", len(removed),
+				"всего_символов", len(desired),
+			)
+			symbols = desired
+		}
+	}
+}
+
+func diffSymbols(current, desired []string) (added, removed []string) {
+	currentSet := make(map[string]struct{}, len(current))
+	desiredSet := make(map[string]struct{}, len(desired))
+	for _, symbol := range current {
+		currentSet[symbol] = struct{}{}
+	}
+	for _, symbol := range desired {
+		desiredSet[symbol] = struct{}{}
+		if _, exists := currentSet[symbol]; !exists {
+			added = append(added, symbol)
+		}
+	}
+	for _, symbol := range current {
+		if _, exists := desiredSet[symbol]; !exists {
+			removed = append(removed, symbol)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+func (m *Manager) replaceShardConnection(previous, current []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	previousKey := shardKey(previous)
+	currentKey := shardKey(current)
+	connected, exists := m.shardConnections[previousKey]
+	if exists {
+		delete(m.shardConnections, previousKey)
+		m.shardConnections[currentKey] = connected
+	}
+}
+
 
 func (m *Manager) runShard(ctx context.Context, symbols []string) {
 	backoff := m.cfg.ReconnectMin
@@ -638,7 +941,11 @@ func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
 }
 
 func buildSubscriptionBatches(symbols []string, depth, batchSize int) []subscriptionBatch {
-	if depth <= 0 || batchSize <= 0 {
+	return buildOperationBatches("subscribe", subscriptionTopics(symbols, depth), batchSize)
+}
+
+func subscriptionTopics(symbols []string, depth int) []string {
+	if depth <= 0 {
 		return nil
 	}
 	arguments := make([]string, 0, len(symbols)*2)
@@ -648,6 +955,13 @@ func buildSubscriptionBatches(symbols []string, depth, batchSize int) []subscrip
 			fmt.Sprintf("orderbook.%d.%s", depth, symbol),
 		)
 	}
+	return arguments
+}
+
+func buildOperationBatches(operation string, arguments []string, batchSize int) []subscriptionBatch {
+	if batchSize <= 0 || len(arguments) == 0 {
+		return nil
+	}
 	batches := make([]subscriptionBatch, 0, (len(arguments)+batchSize-1)/batchSize)
 	for start := 0; start < len(arguments); start += batchSize {
 		end := start + batchSize
@@ -655,7 +969,7 @@ func buildSubscriptionBatches(symbols []string, depth, batchSize int) []subscrip
 			end = len(arguments)
 		}
 		batches = append(batches, subscriptionBatch{
-			Operation: "subscribe",
+			Operation: operation,
 			Arguments: append([]string(nil), arguments[start:end]...),
 		})
 	}

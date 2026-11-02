@@ -228,6 +228,80 @@ func TestReadLoopContinuesAfterStaleTrade(t *testing.T) {
 	}
 }
 
+
+func TestStableShardAssignmentsPreservesExistingMembership(t *testing.T) {
+	runtime0 := newManagedShard([]string{"AAAUSDT", "BBBUSDT"}, func() {})
+	runtime1 := newManagedShard([]string{"CCCUSDT"}, func() {})
+	assignments, nextID := stableShardAssignments(
+		map[int]*managedShard{0: runtime0, 1: runtime1},
+		[]string{"AAAUSDT", "BBBUSDT", "DDDUSDT"},
+		2,
+		2,
+	)
+	if nextID != 2 {
+		t.Fatalf("next shard ID = %d, want 2", nextID)
+	}
+	if !equalStrings(assignments[0], []string{"AAAUSDT", "BBBUSDT"}) {
+		t.Fatalf("existing full shard was rearranged: %v", assignments[0])
+	}
+	if !equalStrings(assignments[1], []string{"DDDUSDT"}) {
+		t.Fatalf("new symbol was not placed into the least-loaded shard: %v", assignments[1])
+	}
+}
+
+func TestDynamicSubscriptionsUpdateWithoutDroppingConnection(t *testing.T) {
+	manager := testManager(t)
+	conn := newFakeWireConn()
+	dialer := &fakeConnector{conns: []wireConn{conn}, dialed: make(chan int, 4)}
+	manager.connector = dialer
+	runtime := newManagedShard([]string{"BTCUSDT"}, func() {})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.connectAndServeDynamic(ctx, runtime)
+	}()
+
+	waitFor(t, time.Second, func() bool {
+		return hasOperationForTopic(conn.writeSnapshot(), "subscribe", "publicTrade.BTCUSDT") &&
+			hasOperationForTopic(conn.writeSnapshot(), "subscribe", "orderbook.50.BTCUSDT")
+	})
+	runtime.setSymbols([]string{"BTCUSDT", "ETHUSDT"})
+	waitFor(t, time.Second, func() bool {
+		return hasOperationForTopic(conn.writeSnapshot(), "subscribe", "publicTrade.ETHUSDT") &&
+			hasOperationForTopic(conn.writeSnapshot(), "subscribe", "orderbook.50.ETHUSDT")
+	})
+	runtime.setSymbols([]string{"ETHUSDT"})
+	waitFor(t, time.Second, func() bool {
+		return hasOperationForTopic(conn.writeSnapshot(), "unsubscribe", "publicTrade.BTCUSDT") &&
+			hasOperationForTopic(conn.writeSnapshot(), "unsubscribe", "orderbook.50.BTCUSDT")
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("динамическое WS-соединение не остановилось после отмены контекста")
+	}
+	if dialer.dials != 1 {
+		t.Fatalf("динамические subscribe/unsubscribe вызвали %d подключений, ожидалось одно", dialer.dials)
+	}
+}
+
+func hasOperationForTopic(messages [][]byte, operation, topic string) bool {
+	for _, message := range messages {
+		var value subscriptionBatch
+		if json.Unmarshal(message, &value) == nil && value.Operation == operation {
+			for _, argument := range value.Arguments {
+				if argument == topic {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func TestSetSymbolsCoalescesAndSorts(t *testing.T) {
 	manager := testManager(t)
 	manager.SetSymbols([]string{"ethusdt", "BTCUSDT", "BTCUSDT", "bad symbol"})
