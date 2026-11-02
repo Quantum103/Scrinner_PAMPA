@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -261,12 +260,15 @@ type AccountSnapshot struct {
 
 type Engine struct {
 	mu            sync.RWMutex
-	repository    Repository
-	initialBalance float64
-	equityHistory []EquityPoint
-	processedSignals map[string]struct{}
-	storageErr    error
-	lastEquityRecordAt time.Time
+	repository          Repository
+	initialBalance      float64
+	equityHistory       []EquityPoint
+	pendingEquityPoints []EquityPoint
+	processedSignals    map[string]struct{}
+	pendingSignalIDs    map[string]struct{}
+	pendingClosedTrades []Position
+	storageErr          error
+	lastEquityRecordAt  time.Time
 	cfg           Config
 	balance       float64
 	realizedPnL   float64
@@ -295,6 +297,7 @@ func NewWithRepository(cfg Config, repository Repository) (*Engine, error) {
 		balance: cfg.InitialBalanceUSDT, initialBalance: cfg.InitialBalanceUSDT,
 		contracts: make(map[string]Contract), funding: make(map[string]Funding),
 		positions: make(map[string]*Position), processedSignals: make(map[string]struct{}),
+		pendingSignalIDs: make(map[string]struct{}),
 	}
 	if repository == nil {
 		e.recordEquityLocked(time.Now().UTC(), true)
@@ -352,13 +355,12 @@ func (e *Engine) persistentStateLocked(now time.Time) PersistentState {
 	for _, position := range e.positions {
 		positions = append(positions, *position)
 	}
-	closed := append([]Position(nil), e.closedTrades...)
-	equity := append([]EquityPoint(nil), e.equityHistory...)
-	signals := make([]string, 0, len(e.processedSignals))
-	for id := range e.processedSignals {
+	closed := append([]Position(nil), e.pendingClosedTrades...)
+	equity := append([]EquityPoint(nil), e.pendingEquityPoints...)
+	signals := make([]string, 0, len(e.pendingSignalIDs))
+	for id := range e.pendingSignalIDs {
 		signals = append(signals, id)
 	}
-	sort.Strings(signals)
 	return PersistentState{
 		Found: true, InitialBalanceUSDT: e.initialBalance, Balance: e.balance,
 		RealizedPnL: e.realizedPnL, TotalFees: e.totalFees, NetFunding: e.netFunding,
@@ -379,6 +381,9 @@ func (e *Engine) persistLocked(now time.Time) error {
 		return err
 	}
 	e.storageErr = nil
+	e.pendingClosedTrades = nil
+	e.pendingEquityPoints = nil
+	e.pendingSignalIDs = make(map[string]struct{})
 	return nil
 }
 
@@ -386,17 +391,27 @@ func (e *Engine) recordEquityLocked(now time.Time, force bool) {
 	if now.IsZero() {
 		return
 	}
-	if !force && !e.lastEquityRecordAt.IsZero() && now.Sub(e.lastEquityRecordAt) < time.Second {
+	if !e.lastEquityRecordAt.IsZero() && now.Before(e.lastEquityRecordAt) {
 		return
 	}
-	point := EquityPoint{
-		At: now.UTC(), Balance: e.balance, Equity: e.balance + e.unrealizedPnLLocked(),
-		RealizedPnL: e.realizedPnL, UnrealizedPnL: e.unrealizedPnLLocked(),
+	if !force && !e.lastEquityRecordAt.IsZero() && now.Sub(e.lastEquityRecordAt) < 5*time.Second {
+		return
 	}
-	if len(e.equityHistory) > 0 && !now.After(e.lastEquityRecordAt) {
+	unrealized := e.unrealizedPnLLocked()
+	point := EquityPoint{
+		At: now.UTC(), Balance: e.balance, Equity: e.balance + unrealized,
+		RealizedPnL: e.realizedPnL, UnrealizedPnL: unrealized,
+	}
+	if len(e.equityHistory) > 0 && now.Equal(e.lastEquityRecordAt) {
 		e.equityHistory[len(e.equityHistory)-1] = point
+		if len(e.pendingEquityPoints) > 0 && e.pendingEquityPoints[len(e.pendingEquityPoints)-1].At.Equal(point.At) {
+			e.pendingEquityPoints[len(e.pendingEquityPoints)-1] = point
+		} else {
+			e.pendingEquityPoints = append(e.pendingEquityPoints, point)
+		}
 	} else {
 		e.equityHistory = append(e.equityHistory, point)
+		e.pendingEquityPoints = append(e.pendingEquityPoints, point)
 	}
 	e.lastEquityRecordAt = point.At
 }
@@ -657,6 +672,7 @@ func (e *Engine) OpenLong(signal strategy.Signal, book Book, now time.Time) Even
 	e.totalFees += entryFee
 	e.positions[signal.Symbol] = position
 	e.processedSignals[id] = struct{}{}
+	e.pendingSignalIDs[id] = struct{}{}
 	e.updatedAt = now
 
 	eventType := "position_opened"
@@ -803,6 +819,7 @@ func (e *Engine) closeLocked(position *Position, book Book, now time.Time, reaso
 		}
 		eventType = "position_closed"
 		e.closedTrades = append(e.closedTrades, *position)
+		e.pendingClosedTrades = append(e.pendingClosedTrades, *position)
 		delete(e.positions, position.Symbol)
 	}
 	eventNetPnL := netIncrement
