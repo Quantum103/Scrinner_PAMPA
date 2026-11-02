@@ -222,9 +222,7 @@ func (m *Manager) setShardConnection(symbols []string, connected bool, err error
 	key := shardKey(symbols)
 	m.mu.Lock()
 	previous := m.shardConnections[key]
-	if connected || !previous {
-		m.shardConnections[key] = connected
-	}
+	m.shardConnections[key] = connected
 	if connected {
 		m.lastConnectionErr = ""
 	}
