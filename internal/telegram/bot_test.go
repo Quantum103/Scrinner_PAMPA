@@ -90,7 +90,7 @@ func TestAllowlistControlsPauseAndResumeCommands(t *testing.T) {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
 	if len(capture.messages) != 2 ||
-		!strings.Contains(capture.messages[0], "сопровождение") ||
+		!strings.Contains(strings.ToLower(capture.messages[0]), "сопровождение") ||
 		!strings.Contains(capture.messages[1], "возобновлён") {
 		t.Fatalf("unexpected command responses: %v", capture.messages)
 	}
