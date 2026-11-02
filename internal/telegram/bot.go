@@ -173,6 +173,10 @@ func (b *Bot) processUpdate(ctx context.Context, update Update) {
 				"Для доступа к Volume Trader отправь пароль из TELEGRAM_ACCESS_PASSWORD. После проверки сообщение с паролем будет удалено.")
 			return
 		}
+		if strings.HasPrefix(text, "/") {
+			b.sendTo(ctx, message.Chat.ID, "Сначала войди через /start и отправь пароль из TELEGRAM_ACCESS_PASSWORD.")
+			return
+		}
 
 		// Удаляем сообщение с паролем из истории чата до ответа пользователю.
 		if message.MessageID != 0 {
