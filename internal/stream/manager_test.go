@@ -303,6 +303,23 @@ func hasOperationForTopic(messages [][]byte, operation, topic string) bool {
 	return false
 }
 
+
+func TestHandleMessageIgnoresLateMessagesAfterUnsubscribe(t *testing.T) {
+	manager := testManager(t)
+	manager.store.StartSession([]string{"BTCUSDT"})
+	manager.store.MarkSymbolsRemoved([]string{"BTCUSDT"})
+	now := time.Now()
+
+	book := withFreshTimestamp(`{"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1,"data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","1"]],"u":10,"seq":10}}`, now)
+	if err := manager.handleMessage(book, now); err != nil {
+		t.Fatalf("late orderbook must not disconnect WebSocket segment: %v", err)
+	}
+	trade := withFreshTimestamp(`{"topic":"publicTrade.BTCUSDT","type":"snapshot","ts":1,"data":[{"T":1,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100","i":"late-trade"}]}`, now)
+	if err := manager.handleMessage(trade, now); err != nil {
+		t.Fatalf("late trade must not disconnect WebSocket segment: %v", err)
+	}
+}
+
 func TestSetSymbolsCoalescesAndSorts(t *testing.T) {
 	manager := testManager(t)
 	manager.SetSymbols([]string{"ethusdt", "BTCUSDT", "BTCUSDT", "bad symbol"})

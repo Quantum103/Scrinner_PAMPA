@@ -19,6 +19,10 @@ import (
 // Поток WebSocket при этом остаётся рабочим: анализатор сбрасывает историю символа.
 var ErrTradeDataGap = errors.New("обнаружена сделка вне временного допуска")
 
+// ErrInactiveStreamSession означает, что сообщение пришло по теме, которую уже
+// снимают с подписки. Это ожидаемая гонка доставки, а не ошибка соединения.
+var ErrInactiveStreamSession = errors.New("сообщение получено вне активной WebSocket-сессии")
+
 type Trade struct {
 	Symbol    string    `json:"symbol"`
 	Price     string    `json:"price"`
@@ -203,15 +207,33 @@ func (s *Store) MarkRemoved(activeSymbols []string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for symbol, state := range s.states {
+	for symbol := range s.states {
 		if _, ok := active[symbol]; !ok {
-			state.connected = false
-			state.book.invalidate()
-			state.lastStrategyEvaluationAt = time.Time{}
-			s.analyzer.MarkDisconnected(symbol, time.Now())
-			s.strategy.ResetProgress(symbol, "инструмент удалён из активной подписки")
+			s.markSymbolRemovedLocked(symbol)
 		}
 	}
+}
+
+// MarkSymbolsRemoved отключает только указанные символы после снятия их подписок.
+// Это не затрагивает другие сегменты и инструменты, остающиеся в мониторинге.
+func (s *Store) MarkSymbolsRemoved(symbols []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, symbol := range symbols {
+		s.markSymbolRemovedLocked(symbol)
+	}
+}
+
+func (s *Store) markSymbolRemovedLocked(symbol string) {
+	state := s.states[symbol]
+	if state == nil {
+		return
+	}
+	state.connected = false
+	state.book.invalidate()
+	state.lastStrategyEvaluationAt = time.Time{}
+	s.analyzer.MarkDisconnected(symbol, time.Now())
+	s.strategy.ResetProgress(symbol, "инструмент удалён из активной подписки")
 }
 
 func (s *Store) ApplyOrderBook(message []byte, receivedAt time.Time) error {
@@ -228,7 +250,7 @@ func (s *Store) ApplyOrderBook(message []byte, receivedAt time.Time) error {
 	state := s.ensure(parsed.Data.Symbol)
 	if !state.connected {
 		state.book.invalidate()
-		return errors.New("получено обновление стакана вне активной WebSocket-сессии")
+		return ErrInactiveStreamSession
 	}
 	if err := state.book.apply(parsed, s.depth, s.maxDataAge, receivedAt); err != nil {
 		// Сохраняем время некорректного обновления: анализатор отличит повреждённый стакан от ещё не полученного snapshot.
@@ -272,7 +294,7 @@ func (s *Store) ApplyTrades(message []byte, receivedAt time.Time) error {
 
 		state := s.ensure(item.Symbol)
 		if !state.connected {
-			return fmt.Errorf("сделка для %s получена вне активной WebSocket-сессии", item.Symbol)
+			return fmt.Errorf("%w: сделка для %s", ErrInactiveStreamSession, item.Symbol)
 		}
 		if state.hasTrade && (receivedAt.Before(state.lastTradeAt) || receivedAt.Sub(state.lastTradeAt) > s.maxDataAge) {
 			state.tradeGap = true

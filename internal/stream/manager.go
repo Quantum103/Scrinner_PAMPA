@@ -337,7 +337,6 @@ func (m *Manager) Run(ctx context.Context) {
 
 	applySymbols := func(rawSymbols []string) {
 		symbols := normalizeSymbols(rawSymbols)
-		m.store.MarkRemoved(symbols)
 		assignments, nextID := stableShardAssignments(
 			runtimes, symbols, m.cfg.MaxSymbolsPerConnection, nextShardID,
 		)
@@ -364,6 +363,7 @@ func (m *Manager) Run(ctx context.Context) {
 				continue
 			}
 			previous := runtime.snapshotActiveSymbols()
+			m.store.MarkSymbolsRemoved(previous)
 			m.setShardConnection(previous, false, nil)
 			runtime.cancel()
 			delete(runtimes, id)
@@ -531,14 +531,17 @@ func (m *Manager) runManagedShard(ctx context.Context, runtime *managedShard) {
 			return
 		}
 		err := m.connectAndServeDynamic(ctx, runtime)
+		desiredSymbols := runtime.snapshotSymbols()
 		activeSymbols := runtime.snapshotActiveSymbols()
-		m.store.MarkDisconnected(activeSymbols)
+		// При неудачном subscribe новые символы уже могли получить StartSession,
+		// поэтому отключаем все желаемые инструменты сегмента перед переподключением.
+		m.store.MarkDisconnected(desiredSymbols)
 		if ctx.Err() != nil {
 			return
 		}
 		m.setShardConnection(activeSymbols, false, err)
 		m.logger.Warn("WebSocket Bybit отключён; выполняется переподключение",
-			"инструментов", len(activeSymbols),
+			"инструментов", len(desiredSymbols),
 			"ошибка", err,
 			"повтор_через", backoff,
 		)
@@ -641,19 +644,25 @@ func (m *Manager) connectAndServeDynamic(ctx context.Context, runtime *managedSh
 					}
 				}
 			}
+			if len(removed) > 0 {
+				// Старые данные ещё могут прийти из очереди после unsubscribe.
+				// Store отключает их точечно, а handleMessage игнорирует такие запоздавшие пакеты.
+				m.store.MarkSymbolsRemoved(removed)
+			}
 			if len(added) > 0 {
 				if len(removed) > 0 {
 					if err := waitContext(ctx, subscriptionBatchPause); err != nil {
 						return err
 					}
 				}
+				// Сначала открываем Store-сессию: Bybit может прислать данные сразу после subscribe.
+				m.store.StartSession(added)
 				topics := subscriptionTopics(added, m.cfg.Depth)
 				for _, batch := range buildOperationBatches("subscribe", topics, m.cfg.MaxArgsPerSubscribe) {
 					if err := writer.writeJSON(batch); err != nil {
 						return fmt.Errorf("добавить новые подписки Bybit: %w", err)
 					}
 				}
-				m.store.StartSession(added)
 			}
 			m.replaceShardConnection(symbols, desired)
 			runtime.setActiveSymbols(desired)
@@ -917,6 +926,11 @@ func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
 			return fmt.Errorf("символ в topic %q не совпадает с данными %q", envelope.Topic, message.Data.Symbol)
 		}
 		if err := m.store.ApplyOrderBook(payload, receivedAt); err != nil {
+			if errors.Is(err, ErrInactiveStreamSession) {
+				m.logger.Debug("Пропущено запоздавшее обновление снятой подписки",
+					"topic", envelope.Topic, "symbol", message.Data.Symbol)
+				return nil
+			}
 			wrapped := fmt.Errorf("обновить стакан %s: %w", message.Data.Symbol, err)
 			m.ReportMarketDataIssue(wrapped.Error())
 			if errors.Is(err, ErrSnapshotRequired) || errors.Is(err, ErrInvalidOrderbook) {
@@ -938,6 +952,11 @@ func (m *Manager) handleMessage(payload []byte, receivedAt time.Time) error {
 			}
 		}
 		if err := m.store.ApplyTrades(payload, receivedAt); err != nil {
+			if errors.Is(err, ErrInactiveStreamSession) {
+				m.logger.Debug("Пропущены запоздавшие сделки снятой подписки",
+					"topic", envelope.Topic)
+				return nil
+			}
 			if errors.Is(err, ErrTradeDataGap) {
 				// Отдельные просроченные/переставленные сделки уже отброшены Store.
 				// Не рвём общий WebSocket-сегмент: остальные символы продолжают работать.

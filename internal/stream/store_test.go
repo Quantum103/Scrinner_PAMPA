@@ -20,6 +20,27 @@ func newTestStore(t *testing.T, depth, tradeCapacity int) *Store {
 	return store
 }
 
+
+func TestRemovedSymbolRejectsLateMessagesAsInactiveSession(t *testing.T) {
+	store, err := NewStore(50, 5*time.Second, 32, 32)
+	if err != nil {
+		t.Fatalf("NewStore(): %v", err)
+	}
+	store.StartSession([]string{"BTCUSDT"})
+	store.MarkSymbolsRemoved([]string{"BTCUSDT"})
+	now := time.Now()
+
+	book := withFreshTimestamp(`{"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1,"data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","1"]],"u":10,"seq":10}}`, now)
+	if err := store.ApplyOrderBook(book, now); !errors.Is(err, ErrInactiveStreamSession) {
+		t.Fatalf("late orderbook error = %v, want ErrInactiveStreamSession", err)
+	}
+
+	trade := withFreshTimestamp(`{"topic":"publicTrade.BTCUSDT","type":"snapshot","ts":1,"data":[{"T":1,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100","i":"late-trade"}]}`, now)
+	if err := store.ApplyTrades(trade, now); !errors.Is(err, ErrInactiveStreamSession) {
+		t.Fatalf("late trade error = %v, want ErrInactiveStreamSession", err)
+	}
+}
+
 func TestOrderBookSnapshotAndDelta(t *testing.T) {
 	store := newTestStore(t, 50, 10)
 	now := time.Now()
