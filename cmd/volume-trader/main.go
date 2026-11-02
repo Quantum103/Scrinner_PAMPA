@@ -67,7 +67,7 @@ func main() {
 	if cfg.Telegram.BotToken != "" {
 		bot, err := telegram.NewBot(telegram.Config{
 			Token: cfg.Telegram.BotToken,
-			AllowedUserIDs: cfg.Telegram.AllowedUserIDs,
+			AccessPassword: cfg.Telegram.AccessPassword,
 			DailyLossLimitPercent: cfg.Telegram.DailyLossLimitPercent,
 		}, wsManager, logger)
 		if err != nil {
@@ -80,9 +80,9 @@ func main() {
 			defer close(telegramDone)
 			bot.Run(ctx)
 		}()
-		logger.Info("Telegram управление включено", "разрешённых_ID", len(cfg.Telegram.AllowedUserIDs))
+		logger.Info("Telegram управление включено", "авторизация", "пароль из TELEGRAM_ACCESS_PASSWORD")
 	} else {
-		logger.Warn("Telegram управление отключено: задай TELEGRAM_BOT_TOKEN и TELEGRAM_ALLOWED_USER_IDS")
+		logger.Warn("Telegram управление отключено: задай TELEGRAM_BOT_TOKEN и TELEGRAM_ACCESS_PASSWORD")
 	}
 
 	wsDone := make(chan struct{})

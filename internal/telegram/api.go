@@ -83,12 +83,19 @@ func (c *apiClient) sendMessage(ctx context.Context, chatID int64, message strin
 	}, nil)
 }
 
+func (c *apiClient) deleteMessage(ctx context.Context, chatID, messageID int64) error {
+	return c.call(ctx, "deleteMessage", map[string]any{
+		"chat_id": chatID, "message_id": messageID,
+	}, nil)
+}
+
 type Update struct {
 	UpdateID int64 `json:"update_id"`
 	Message  *Message `json:"message"`
 }
 
 type Message struct {
+	MessageID int64 `json:"message_id"`
 	From *User `json:"from"`
 	Chat Chat `json:"chat"`
 	Date int64 `json:"date"`

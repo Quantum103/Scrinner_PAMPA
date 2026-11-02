@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,11 +25,21 @@ const (
 
 type Config struct {
 	Token                 string
-	AllowedUserIDs        []int64
+	AccessPassword        string
 	DailyLossLimitPercent float64
 	PollTimeoutSeconds    int
 	APIBaseURL            string
 }
+
+type authFailure struct {
+	Attempts    int
+	LockedUntil time.Time
+}
+
+const (
+	maxPasswordAttempts = 5
+	authLockoutDuration = 15 * time.Minute
+)
 
 type Bot struct {
 	cfg       Config
@@ -36,6 +47,7 @@ type Bot struct {
 	logger    *slog.Logger
 	api       *apiClient
 	allowed   map[int64]struct{}
+	authFailures map[int64]authFailure
 	notifications chan string
 
 	mu                 sync.Mutex
@@ -53,8 +65,12 @@ func NewBot(cfg Config, manager *stream.Manager, logger *slog.Logger) (*Bot, err
 	if manager == nil {
 		return nil, errors.New("Telegram Bot требует Stream Manager")
 	}
-	if len(cfg.AllowedUserIDs) == 0 {
-		return nil, errors.New("TELEGRAM_ALLOWED_USER_IDS не содержит разрешённых пользователей")
+	cfg.AccessPassword = strings.TrimSpace(cfg.AccessPassword)
+	if cfg.AccessPassword == "" {
+		return nil, errors.New("TELEGRAM_ACCESS_PASSWORD не задан")
+	}
+	if len(cfg.AccessPassword) < 12 {
+		return nil, errors.New("TELEGRAM_ACCESS_PASSWORD должен содержать не менее 12 символов")
 	}
 	if cfg.DailyLossLimitPercent <= 0 || cfg.DailyLossLimitPercent > 100 {
 		return nil, errors.New("дневной лимит убытка Telegram должен быть в диапазоне (0, 100]")
@@ -65,22 +81,13 @@ func NewBot(cfg Config, manager *stream.Manager, logger *slog.Logger) (*Bot, err
 	if logger == nil {
 		logger = slog.Default()
 	}
-	allowed := make(map[int64]struct{}, len(cfg.AllowedUserIDs))
-	for _, id := range cfg.AllowedUserIDs {
-		if id <= 0 {
-			return nil, fmt.Errorf("некорректный Telegram ID %d", id)
-		}
-		if _, exists := allowed[id]; exists {
-			return nil, fmt.Errorf("повторяющийся Telegram ID %d", id)
-		}
-		allowed[id] = struct{}{}
-	}
 	baseURL := strings.TrimRight(cfg.APIBaseURL, "/")
 	if baseURL == "" {
 		baseURL = "https://api.telegram.org"
 	}
 	return &Bot{
-		cfg: cfg, manager: manager, logger: logger, allowed: allowed,
+		cfg: cfg, manager: manager, logger: logger,
+		allowed: make(map[int64]struct{}), authFailures: make(map[int64]authFailure),
 		api: &apiClient{token: cfg.Token, baseURL: baseURL, http: defaultHTTPClient()},
 		notifications: make(chan string, 256),
 		lastMarketIssues: make(map[string]time.Time),
@@ -136,23 +143,80 @@ func (b *Bot) processUpdate(ctx context.Context, update Update) {
 		b.logger.Info("Пропущена устаревшая команда Telegram из очереди до запуска", "update_id", update.UpdateID)
 		return
 	}
+
 	userID := message.From.ID
-	if _, ok := b.allowed[userID]; !ok {
-		b.logger.Warn("Отклонена команда от неразрешённого Telegram ID", "telegram_id", userID)
-		return
-	}
-	// Управление разрешено только в личных сообщениях, чтобы исключить команды из групп.
+	// Все действия с ботом, включая ввод пароля, разрешены только в личном чате.
 	if message.Chat.Type != "private" || message.Chat.ID != userID {
 		return
 	}
-	fields := strings.Fields(strings.TrimSpace(message.Text))
+	text := strings.TrimSpace(message.Text)
+	if text == "" {
+		return
+	}
+
+	if !b.isAuthorized(userID) {
+		if remaining := b.authLockRemaining(userID); remaining > 0 {
+			b.sendTo(ctx, message.Chat.ID, fmt.Sprintf(
+				"Слишком много неверных попыток. Повтори вход через %s.",
+				remaining.Round(time.Second),
+			))
+			return
+		}
+
+		fields := strings.Fields(text)
+		command := ""
+		if len(fields) > 0 {
+			command = strings.ToLower(strings.SplitN(fields[0], "@", 2)[0])
+		}
+		if command == "/start" || command == "/login" {
+			b.sendTo(ctx, message.Chat.ID,
+				"Для доступа к Volume Trader отправь пароль из TELEGRAM_ACCESS_PASSWORD. После проверки сообщение с паролем будет удалено.")
+			return
+		}
+
+		// Удаляем сообщение с паролем из истории чата до ответа пользователю.
+		if message.MessageID != 0 {
+			deleteCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			err := b.api.deleteMessage(deleteCtx, message.Chat.ID, message.MessageID)
+			cancel()
+			if err != nil {
+				b.logger.Debug("Не удалось удалить сообщение с паролем Telegram", "telegram_id", userID, "ошибка", err)
+			}
+		}
+
+		if subtle.ConstantTimeCompare([]byte(text), []byte(b.cfg.AccessPassword)) == 1 {
+			b.authorize(userID)
+			b.sendTo(ctx, message.Chat.ID,
+				"Доступ подтверждён. Volume Trader готов к управлению. Режим: Paper Trading, только LONG.\n\nКоманды: /status, /balance, /position, /stats, /trades, /pause, /resume, /logout.")
+			return
+		}
+
+		attempts, lockedFor := b.recordPasswordFailure(userID)
+		if lockedFor > 0 {
+			b.sendTo(ctx, message.Chat.ID, fmt.Sprintf(
+				"Пароль неверный. Достигнут лимит из %d попыток. Повтори вход через %s.",
+				maxPasswordAttempts, lockedFor.Round(time.Second),
+			))
+			return
+		}
+		b.sendTo(ctx, message.Chat.ID, fmt.Sprintf(
+				"Пароль неверный. Осталось попыток: %d.",
+				maxPasswordAttempts-attempts,
+		))
+		return
+	}
+
+	fields := strings.Fields(text)
 	if len(fields) == 0 {
 		return
 	}
 	command := strings.SplitN(fields[0], "@", 2)[0]
 	switch strings.ToLower(command) {
 	case "/start":
-		b.sendTo(ctx, message.Chat.ID, "Volume Trader — мониторинг и управление виртуальной торговлей. Режим: Paper Trading, только LONG. Реальные ордера не отправляются.\n\nКоманды: /status, /balance, /position, /stats, /trades, /pause, /resume.")
+		b.sendTo(ctx, message.Chat.ID, "Volume Trader — мониторинг и управление виртуальной торговлей. Режим: Paper Trading, только LONG. Реальные ордера не отправляются.\n\nКоманды: /status, /balance, /position, /stats, /trades, /pause, /resume, /logout.")
+	case "/logout":
+		b.deauthorize(userID)
+		b.sendTo(ctx, message.Chat.ID, "Доступ завершён. Для повторного входа отправь /start и введи пароль.")
 	case "/status":
 		b.sendTo(ctx, message.Chat.ID, b.statusText())
 	case "/balance":
@@ -174,8 +238,75 @@ func (b *Bot) processUpdate(ctx context.Context, update Update) {
 		}
 		b.sendTo(ctx, message.Chat.ID, "Поиск новых входов возобновлён. Режим Paper Trading; сопровождение открытых позиций работает.")
 	default:
-		b.sendTo(ctx, message.Chat.ID, "Неизвестная команда. Доступно: /start, /status, /balance, /position, /stats, /trades, /pause, /resume.")
+		b.sendTo(ctx, message.Chat.ID, "Неизвестная команда. Доступно: /start, /status, /balance, /position, /stats, /trades, /pause, /resume, /logout.")
 	}
+}
+
+func (b *Bot) isAuthorized(userID int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.allowed[userID]
+	return ok
+}
+
+func (b *Bot) authorize(userID int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.allowed[userID] = struct{}{}
+	delete(b.authFailures, userID)
+}
+
+func (b *Bot) deauthorize(userID int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.allowed, userID)
+}
+
+func (b *Bot) authorizedIDs() []int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ids := make([]int64, 0, len(b.allowed))
+	for id := range b.allowed {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (b *Bot) authLockRemaining(userID int64) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	failure, ok := b.authFailures[userID]
+	if !ok || failure.LockedUntil.IsZero() {
+		return 0
+	}
+	remaining := time.Until(failure.LockedUntil)
+	if remaining <= 0 {
+		delete(b.authFailures, userID)
+		return 0
+	}
+	return remaining
+}
+
+func (b *Bot) recordPasswordFailure(userID int64) (int, time.Duration) {
+	now := time.Now()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	failure := b.authFailures[userID]
+	if !failure.LockedUntil.IsZero() && now.Before(failure.LockedUntil) {
+		return failure.Attempts, failure.LockedUntil.Sub(now)
+	}
+	if !failure.LockedUntil.IsZero() {
+		failure = authFailure{}
+	}
+	failure.Attempts++
+	var lockedFor time.Duration
+	if failure.Attempts >= maxPasswordAttempts {
+		failure.LockedUntil = now.Add(authLockoutDuration)
+		lockedFor = authLockoutDuration
+	}
+	b.authFailures[userID] = failure
+	return failure.Attempts, lockedFor
 }
 
 func (b *Bot) statusText() string {
@@ -448,7 +579,7 @@ func (b *Bot) notificationLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case message := <-b.notifications:
-			for id := range b.allowed {
+			for _, id := range b.authorizedIDs() {
 				b.sendTo(ctx, id, message)
 			}
 		}

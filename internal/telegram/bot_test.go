@@ -32,9 +32,14 @@ type messageCapture struct {
 	messages []string
 }
 
-func TestAllowlistControlsPauseAndResumeCommands(t *testing.T) {
+func TestPasswordAuthControlsPauseAndResumeCommands(t *testing.T) {
 	var capture messageCapture
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/deleteMessage") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ok":true,"result":true}`)
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/sendMessage") {
 			t.Errorf("unexpected Telegram API method: %s", r.URL.Path)
 		}
@@ -55,26 +60,36 @@ func TestAllowlistControlsPauseAndResumeCommands(t *testing.T) {
 
 	manager := newTestManager(t)
 	bot, err := NewBot(Config{
-		Token: "test-token", AllowedUserIDs: []int64{12345},
+		Token: "test-token", AccessPassword: "correct-horse-battery",
 		DailyLossLimitPercent: 5, APIBaseURL: server.URL,
 	}, manager, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("NewBot() error = %v", err)
 	}
 
-	// Неавторизованный пользователь не может управлять приложением.
+	// До ввода пароля команда /pause не выполняется.
 	bot.processUpdate(context.Background(), Update{Message: &Message{
-		From: &User{ID: 99999}, Chat: Chat{ID: 99999, Type: "private"}, Text: "/pause",
+		From: &User{ID: 12345}, Chat: Chat{ID: 12345, Type: "private"}, Text: "/pause",
 	}})
 	if manager.EntryPaused() {
-		t.Fatal("unauthorized user paused the entry strategy")
+		t.Fatal("unauthenticated user paused the entry strategy")
 	}
-	capture.mu.Lock()
-	if len(capture.messages) != 0 {
-		t.Fatalf("unauthorized command generated a response: %v", capture.messages)
-	}
-	capture.mu.Unlock()
 
+	// Неверный пароль не открывает доступ.
+	bot.processUpdate(context.Background(), Update{Message: &Message{
+		MessageID: 1, From: &User{ID: 12345}, Chat: Chat{ID: 12345, Type: "private"}, Text: "wrong-password",
+	}})
+	if bot.isAuthorized(12345) {
+		t.Fatal("wrong password authorized the user")
+	}
+
+	// Верный пароль открывает доступ без ручного внесения ID в .env.
+	bot.processUpdate(context.Background(), Update{Message: &Message{
+		MessageID: 2, From: &User{ID: 12345}, Chat: Chat{ID: 12345, Type: "private"}, Text: "correct-horse-battery",
+	}})
+	if !bot.isAuthorized(12345) {
+		t.Fatal("correct password did not authorize the user")
+	}
 	bot.processUpdate(context.Background(), Update{Message: &Message{
 		From: &User{ID: 12345}, Chat: Chat{ID: 12345, Type: "private"}, Text: "/pause@volume_trader_bot",
 	}})
@@ -89,9 +104,9 @@ func TestAllowlistControlsPauseAndResumeCommands(t *testing.T) {
 	}
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	if len(capture.messages) != 2 ||
-		!strings.Contains(strings.ToLower(capture.messages[0]), "сопровождение") ||
-		!strings.Contains(capture.messages[1], "возобновлён") {
+	if len(capture.messages) != 5 ||
+		!strings.Contains(capture.messages[3], "сопровождение") ||
+		!strings.Contains(capture.messages[4], "возобновлён") {
 		t.Fatalf("unexpected command responses: %v", capture.messages)
 	}
 }
@@ -104,13 +119,16 @@ func TestResumeCannotOverrideDailyLossLock(t *testing.T) {
 	defer server.Close()
 	manager := newTestManager(t)
 	bot, err := NewBot(Config{
-		Token: "test-token", AllowedUserIDs: []int64{1}, DailyLossLimitPercent: 5, APIBaseURL: server.URL,
+		Token: "test-token", AccessPassword: "correct-horse-battery", DailyLossLimitPercent: 5, APIBaseURL: server.URL,
 	}, manager, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	manager.SetDailyLossReached(true)
 	// processUpdate response API can fail because this test only verifies the control state.
+	bot.processUpdate(context.Background(), Update{Message: &Message{
+		From: &User{ID: 1}, Chat: Chat{ID: 1, Type: "private"}, Text: "correct-horse-battery",
+	}})
 	bot.processUpdate(context.Background(), Update{Message: &Message{
 		From: &User{ID: 1}, Chat: Chat{ID: 1, Type: "private"}, Text: "/resume",
 	}})
@@ -138,7 +156,7 @@ func TestDailyStartingEquityUsesFirstPointOfCurrentUTCDay(t *testing.T) {
 func TestClosedTradeNotificationContainsAllExecutionCostsAndBalance(t *testing.T) {
 	manager := newTestManager(t)
 	bot, err := NewBot(Config{
-		Token: "test-token", AllowedUserIDs: []int64{123},
+		Token: "test-token", AccessPassword: "correct-horse-battery",
 		DailyLossLimitPercent: 5,
 	}, manager, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
