@@ -42,6 +42,7 @@ type Bot struct {
 	mu                 sync.Mutex
 	lastMarketIssues   map[string]time.Time
 	lastConnectedCount int
+	startedAt          time.Time
 	dailyDate          string
 	dailyAlertSent     bool
 }
@@ -84,6 +85,7 @@ func NewBot(cfg Config, manager *stream.Manager, logger *slog.Logger) (*Bot, err
 		api: &apiClient{token: cfg.Token, baseURL: baseURL, http: defaultHTTPClient()},
 		notifications: make(chan string, 256),
 		lastMarketIssues: make(map[string]time.Time),
+		startedAt: time.Now().UTC(),
 	}, nil
 }
 
@@ -131,6 +133,10 @@ func (b *Bot) processUpdate(ctx context.Context, update Update) {
 		return
 	}
 	message := update.Message
+	if message.Date > 0 && time.Unix(message.Date, 0).Before(b.startedAt.Add(-5*time.Second)) {
+		b.logger.Info("Пропущена устаревшая команда Telegram из очереди до запуска", "update_id", update.UpdateID)
+		return
+	}
 	userID := message.From.ID
 	if _, ok := b.allowed[userID]; !ok {
 		b.logger.Warn("Отклонена команда от неразрешённого Telegram ID", "telegram_id", userID)
