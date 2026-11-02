@@ -247,6 +247,10 @@ func (m *Manager) setShardConnection(symbols []string, connected bool, err error
 	m.mu.Unlock()
 	if observer != nil && changed {
 		observer.OnConnectionStatus(status)
+	} else if observer != nil && err != nil {
+		// Первое подключение тоже может завершиться ошибкой: его потеря
+		// не является переходом true -> false, но об этом нужно уведомить.
+		observer.OnMarketDataIssue("Не удалось подключиться к публичному WebSocket Bybit: " + err.Error())
 	}
 }
 
