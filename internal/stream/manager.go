@@ -538,7 +538,7 @@ func (m *Manager) runManagedShard(ctx context.Context, runtime *managedShard) {
 		}
 		m.setShardConnection(activeSymbols, false, err)
 		m.logger.Warn("WebSocket Bybit отключён; выполняется переподключение",
-			"инструментов", len(symbols),
+			"инструментов", len(activeSymbols),
 			"ошибка", err,
 			"повтор_через", backoff,
 		)
