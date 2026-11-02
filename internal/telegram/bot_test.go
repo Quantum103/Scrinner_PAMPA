@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -51,7 +52,7 @@ func TestAllowlistControlsPauseAndResumeCommands(t *testing.T) {
 	}
 
 	// Неавторизованный пользователь не может управлять приложением.
-	bot.processUpdate(t.Context(), Update{Message: &Message{
+	bot.processUpdate(context.Background(), Update{Message: &Message{
 		From: &User{ID: 99999}, Chat: Chat{ID: 99999, Type: "private"}, Text: "/pause",
 	}})
 	if manager.EntryPaused() {
@@ -63,13 +64,13 @@ func TestAllowlistControlsPauseAndResumeCommands(t *testing.T) {
 	}
 	capture.mu.Unlock()
 
-	bot.processUpdate(t.Context(), Update{Message: &Message{
+	bot.processUpdate(context.Background(), Update{Message: &Message{
 		From: &User{ID: 12345}, Chat: Chat{ID: 12345, Type: "private"}, Text: "/pause@volume_trader_bot",
 	}})
 	if !manager.EntryPaused() {
 		t.Fatal("authorized /pause did not stop new entries")
 	}
-	bot.processUpdate(t.Context(), Update{Message: &Message{
+	bot.processUpdate(context.Background(), Update{Message: &Message{
 		From: &User{ID: 12345}, Chat: Chat{ID: 12345, Type: "private"}, Text: "/resume",
 	}})
 	if manager.EntryPaused() {
@@ -85,16 +86,21 @@ func TestAllowlistControlsPauseAndResumeCommands(t *testing.T) {
 }
 
 func TestResumeCannotOverrideDailyLossLock(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true,"result":{}}`)
+	}))
+	defer server.Close()
 	manager := newTestManager(t)
 	bot, err := NewBot(Config{
-		Token: "test-token", AllowedUserIDs: []int64{1}, DailyLossLimitPercent: 5,
+		Token: "test-token", AllowedUserIDs: []int64{1}, DailyLossLimitPercent: 5, APIBaseURL: server.URL,
 	}, manager, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	manager.SetDailyLossReached(true)
 	// processUpdate response API can fail because this test only verifies the control state.
-	bot.processUpdate(t.Context(), Update{Message: &Message{
+	bot.processUpdate(context.Background(), Update{Message: &Message{
 		From: &User{ID: 1}, Chat: Chat{ID: 1, Type: "private"}, Text: "/resume",
 	}})
 	if !manager.EntryPaused() {
