@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
 )
 
@@ -144,6 +143,43 @@ func waitKlineTopics(t *testing.T, conn *fakeKlineWireConn, operation string, to
 	}
 }
 
+func waitKlineTopicsAcrossConnections(t *testing.T, connections []*fakeKlineWireConn, operation string, topics ...string) map[string]int {
+	t.Helper()
+	pending := make(map[string]struct{}, len(topics))
+	for _, topic := range topics { pending[topic] = struct{}{} }
+	locations := make(map[string]int, len(topics))
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(2 * time.Second)
+	for len(pending) > 0 {
+		select {
+		case <-ticker.C:
+			for connectionIndex, conn := range connections {
+				for {
+					select {
+					case payload := <-conn.writes:
+						var command klineSubscriptionBatch
+						if err := json.Unmarshal(payload, &command); err != nil { t.Fatalf("команда не JSON: %v", err) }
+						if command.Operation != operation { continue }
+						for _, argument := range command.Arguments {
+							if _, exists := pending[argument]; exists {
+								delete(pending, argument)
+								locations[argument] = connectionIndex
+							}
+						}
+					default:
+						goto nextConnection
+					}
+				}
+			nextConnection:
+			}
+		case <-deadline:
+			t.Fatalf("не получены %s-команды для тем %v", operation, pending)
+		}
+	}
+	return locations
+}
+
 func TestKlineManagerChangesTopicsWithoutReconnectingShard(t *testing.T) {
 	conn := newFakeKlineWireConn()
 	connector := &fakeKlineConnector{conns: []*fakeKlineWireConn{conn}}
@@ -197,14 +233,19 @@ func TestKlineManagerKeepsExistingSymbolsOnTheirShardWhenUniverseChanges(t *test
 	done := make(chan struct{})
 	go func() { defer close(done); manager.Run(ctx) }()
 
-	waitKlineTopics(t, connA, "subscribe", "kline.1.AAAUSDT", "kline.1.BBBUSDT")
-	waitKlineCommand(t, connB, "subscribe", "kline.1.CCCUSDT")
+	locations := waitKlineTopicsAcrossConnections(t, []*fakeKlineWireConn{connA, connB},
+		"subscribe", "kline.1.AAAUSDT", "kline.1.BBBUSDT", "kline.1.CCCUSDT")
+	shardA := locations["kline.1.AAAUSDT"]
+	if locations["kline.1.BBBUSDT"] != shardA || locations["kline.1.CCCUSDT"] == shardA {
+		t.Fatalf("инструменты распределены не по стабильным сегментам: %v", locations)
+	}
+	stableConnection := []*fakeKlineWireConn{connA, connB}[shardA]
 
 	// Освобождаем слот в первом сегменте и добавляем новый инструмент.
-	// BBB остаётся на первом сегменте, CCC — на втором.
+	// BBB и DDD должны остаться в исходном сегменте, CCC — в другом.
 	manager.SetSymbols([]string{"BBBUSDT", "CCCUSDT", "DDDUSDT"})
-	waitKlineCommand(t, connA, "unsubscribe", "kline.1.AAAUSDT")
-	waitKlineCommand(t, connA, "subscribe", "kline.1.DDDUSDT")
+	waitKlineCommand(t, stableConnection, "unsubscribe", "kline.1.AAAUSDT")
+	waitKlineCommand(t, stableConnection, "subscribe", "kline.1.DDDUSDT")
 	if got := connector.dials.Load(); got != 2 {
 		t.Fatalf("состав рынка изменил %d WebSocket-соединений, ожидалось 2 стабильных сегмента", got)
 	}

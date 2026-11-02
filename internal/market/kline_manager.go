@@ -205,6 +205,13 @@ func NewKlineManager(client KlineRESTClient, url string, cfg KlineConfig, store 
 	}, nil
 }
 
+// setConnector позволяет тестам подменять WebSocket transport до запуска менеджера.
+func (m *KlineManager) setConnector(connector klineConnector) {
+	if connector != nil {
+		m.connector = connector
+	}
+}
+
 // SetSymbols передаёт полный список для минутного мониторинга.
 // Изменения обрабатываются как diff и не переподключают работающие сегменты.
 func (m *KlineManager) SetSymbols(symbols []string) {
