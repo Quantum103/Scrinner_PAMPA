@@ -691,8 +691,12 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 	bestBid := book.Bids[0].Price
 	position.MarkPrice = bestBid
 	e.applyDueFunding(position, now)
-	if bestBid > position.HighWaterPrice {
+	if position.ExitReason == "" && !position.StopTriggered && bestBid > position.HighWaterPrice {
 		position.HighWaterPrice = bestBid
+		candidate := floorToStep(bestBid*(1-e.cfg.TrailingStopPercent/100), position.Contract.TickSize)
+		if candidate > position.StopPrice {
+			position.StopPrice = candidate
+		}
 	}
 	if position.LowWaterPrice <= 0 || bestBid < position.LowWaterPrice {
 		position.LowWaterPrice = bestBid
@@ -704,18 +708,9 @@ func (e *Engine) UpdateBook(symbol string, book Book, now time.Time) []Event {
 	position.UnrealizedPnL = (bestBid - position.EntryPrice) * position.RemainingQuantity
 	position.UpdatedAt = now
 
-	if position.ExitReason == "" && !position.StopTriggered {
-		if bestBid > position.HighWaterPrice {
-			position.HighWaterPrice = bestBid
-			candidate := floorToStep(bestBid*(1-e.cfg.TrailingStopPercent/100), position.Contract.TickSize)
-			if candidate > position.StopPrice {
-				position.StopPrice = candidate
-			}
-		}
-		if bestBid <= position.StopPrice {
-			position.StopTriggered = true
-			position.ExitReason = "сработал виртуальный Trailing Stop"
-		}
+	if bestBid <= position.StopPrice && position.ExitReason == "" {
+		position.StopTriggered = true
+		position.ExitReason = "сработал виртуальный Trailing Stop"
 	}
 	// После частичного исполнения любой причины выхода продолжаем закрывать остаток
 	// по последующим актуальным Bid, не теряя первоначальную причину.
