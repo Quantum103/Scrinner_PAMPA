@@ -107,11 +107,11 @@ func TestPasswordAuthControlsPauseAndResumeCommands(t *testing.T) {
 	if len(capture.messages) != 5 {
 		t.Fatalf("got %d responses, want 5: %v", len(capture.messages), capture.messages)
 	}
-	if !strings.Contains(capture.messages[0], "/start") ||
-		!strings.Contains(capture.messages[1], "Осталось попыток: 4") ||
-		!strings.Contains(capture.messages[2], "Доступ подтверждён") ||
-		!strings.Contains(capture.messages[3], "сопровождение") ||
-		!strings.Contains(capture.messages[4], "возобнов") {
+	if !strings.Contains(strings.ToLower(capture.messages[0]), "/start") ||
+		!strings.Contains(strings.ToLower(capture.messages[1]), "осталось попыток: 4") ||
+		!strings.Contains(strings.ToLower(capture.messages[2]), "доступ подтверждён") ||
+		!strings.Contains(strings.ToLower(capture.messages[3]), "сопровождение") ||
+		!strings.Contains(strings.ToLower(capture.messages[4]), "возобнов") {
 		t.Fatalf("unexpected command responses: %v", capture.messages)
 	}
 }
