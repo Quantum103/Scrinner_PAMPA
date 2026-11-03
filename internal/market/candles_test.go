@@ -79,13 +79,66 @@ func TestCandleStoreNeedsTwentyContinuousCompletedCandles(t *testing.T) {
 
 	store.Activate("BBBUSDT")
 	gapped := testMinuteHistory(now, 20)
-	gapped[10].StartTime = gapped[10].StartTime.Add(time.Minute)
+	gapped = append(gapped[:10], gapped[11:]...)
 	if err := store.LoadHistory("BBBUSDT", gapped, now); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, _ = store.Snapshot("BBBUSDT", now)
-	if snapshot.HistoryReady {
-		t.Fatalf("история с пропуском признана готовой: %+v", snapshot)
+	if !snapshot.HistoryReady || len(snapshot.History) != 20 {
+		t.Fatalf("отсутствующая минутная свеча без торгов не была восстановлена: %+v", snapshot)
+	}
+	if snapshot.History[10].Volume != 0 || snapshot.History[10].Turnover != 0 ||
+		snapshot.History[10].Open != snapshot.History[10].Close {
+		t.Fatalf("восстановленная пустая свеча содержит выдуманную активность: %+v", snapshot.History[10])
+	}
+}
+
+func TestCandleStoreFillsMultipleEmptyMinutesWithoutInventingActivity(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 34, 30, 0, time.UTC)
+	history := testMinuteHistory(now, 20)
+	// Simulate two minutes without trades, omitted from the exchange history.
+	history = append(history[:6], history[8:]...)
+
+	store := NewCandleStore(90 * time.Second)
+	store.Activate("AAAUSDT")
+	if err := store.LoadHistory("AAAUSDT", history, now); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ := store.Snapshot("AAAUSDT", now)
+	if !snapshot.HistoryReady || len(snapshot.History) != 20 {
+		t.Fatalf("история с пустыми минутами не восстановлена: %+v", snapshot)
+	}
+	for i := 1; i < len(snapshot.History); i++ {
+		if !snapshot.History[i].StartTime.Equal(snapshot.History[i-1].StartTime.Add(time.Minute)) {
+			t.Fatalf("история всё ещё содержит разрыв между %s и %s", snapshot.History[i-1].StartTime, snapshot.History[i].StartTime)
+		}
+	}
+	if snapshot.History[6].Volume != 0 || snapshot.History[6].Turnover != 0 ||
+		snapshot.History[7].Volume != 0 || snapshot.History[7].Turnover != 0 {
+		t.Fatalf("восстановленные свечи не имеют нулевую активность: %+v / %+v", snapshot.History[6], snapshot.History[7])
+	}
+	if snapshot.History[6].Open != snapshot.History[6].Close ||
+		snapshot.History[7].Open != snapshot.History[7].Close {
+		t.Fatalf("пустые свечи должны быть flat: %+v / %+v", snapshot.History[6], snapshot.History[7])
+	}
+}
+
+func TestCandleStoreIgnoresLateConfirmedCandleOutsideRetainedHistory(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 34, 30, 0, time.UTC)
+	store := NewCandleStore(90 * time.Second)
+	store.Activate("AAAUSDT")
+	if err := store.LoadHistory("AAAUSDT", testMinuteHistory(now, 20), now); err != nil {
+		t.Fatal(err)
+	}
+
+	old := testLiveCandle(now.Truncate(time.Minute).Add(-21*time.Minute), true, 999)
+	if err := store.ApplyUpdate("AAAUSDT", old, now.Add(time.Second)); err != nil {
+		t.Fatalf("запоздавшая свеча вне окна истории не должна сбрасывать актуальную историю: %v", err)
+	}
+	snapshot, _ := store.Snapshot("AAAUSDT", now.Add(time.Second))
+	if !snapshot.HistoryReady || len(snapshot.History) != 20 ||
+		snapshot.History[19].StartTime != now.Truncate(time.Minute).Add(-time.Minute) {
+		t.Fatalf("запоздавшая свеча изменила актуальную историю: %+v", snapshot)
 	}
 }
 

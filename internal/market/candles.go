@@ -160,6 +160,9 @@ func (s *CandleStore) LoadHistory(symbol string, candles []bybit.Kline, now time
 		return merged[i].StartTime.Before(merged[j].StartTime)
 	})
 	merged = deduplicateCandles(merged)
+	// Bybit may omit a minute entirely when no trades occurred. Reconstruct
+	// such intervals at the previous close with zero volume and zero turnover.
+	merged = fillMissingMinuteCandles(merged, s.historyLimit)
 	if len(merged) > s.historyLimit {
 		merged = merged[len(merged)-s.historyLimit:]
 	}
@@ -210,18 +213,34 @@ func (s *CandleStore) ApplyUpdate(symbol string, candle Candle, receivedAt time.
 		}
 		if _, exists := findCandle(state.history, key); exists {
 			replaceCandle(state.history, key, candle)
-		} else {
-			if len(state.history) > 0 {
-				last := state.history[len(state.history)-1]
-				if !candle.StartTime.Equal(last.StartTime.Add(candleInterval)) {
-					state.historyReady = false
-					state.lastError = fmt.Sprintf("%v: после %s пришла %s", ErrCandleGap, last.StartTime, candle.StartTime)
-					state.wsConfirmed[key] = candle
-					trimWSConfirmed(state.wsConfirmed, s.historyLimit)
-					return ErrCandleGap
-				}
-			}
+		} else if len(state.history) == 0 {
 			state.history = append(state.history, candle)
+		} else {
+			last := state.history[len(state.history)-1]
+			switch {
+			case candle.StartTime.Before(last.StartTime):
+				// Late confirmations can arrive after REST has already advanced the
+				// retained history. Insert only inside the retained window; discard
+				// older events instead of invalidating newer data.
+				if candle.StartTime.Before(state.history[0].StartTime) {
+					return nil
+				}
+				index := sort.Search(len(state.history), func(i int) bool {
+					return !state.history[i].StartTime.Before(candle.StartTime)
+				})
+				state.history = append(state.history, Candle{})
+				copy(state.history[index+1:], state.history[index:])
+				state.history[index] = candle
+			case candle.StartTime.Equal(last.StartTime.Add(candleInterval)):
+				state.history = append(state.history, candle)
+			default:
+				gapErr := fmt.Errorf("%w: последняя свеча %s, получена %s", ErrCandleGap, last.StartTime, candle.StartTime)
+				state.historyReady = false
+				state.lastError = gapErr.Error()
+				state.wsConfirmed[key] = candle
+				trimWSConfirmed(state.wsConfirmed, s.historyLimit)
+				return gapErr
+			}
 		}
 		state.wsConfirmed[key] = candle
 		trimWSConfirmed(state.wsConfirmed, s.historyLimit)
@@ -243,11 +262,15 @@ func (s *CandleStore) ApplyUpdate(symbol string, candle Candle, receivedAt time.
 			return nil
 		}
 		if candle.StartTime.After(state.current.StartTime) {
+			gapErr := fmt.Errorf("%w: текущая свеча %s сменилась на %s без confirm=true", ErrCandleGap, state.current.StartTime, candle.StartTime)
 			state.historyReady = false
-			state.lastError = fmt.Sprintf("текущая свеча %s сменилась на %s без confirm=true", state.current.StartTime, candle.StartTime)
+			state.lastError = gapErr.Error()
 			state.current = &candle
-			return ErrCandleGap
+			return gapErr
 		}
+	} else if len(state.history) > 0 && !candle.StartTime.After(state.history[len(state.history)-1].StartTime) {
+		// Ignore an old non-confirmed update after its candle was already closed.
+		return nil
 	}
 	state.current = &candle
 	return nil
@@ -383,6 +406,39 @@ func deduplicateCandles(candles []Candle) []Candle {
 			continue
 		}
 		result = append(result, candle)
+	}
+	return result
+}
+
+// fillMissingMinuteCandles reconstructs intervals omitted when no trades occurred.
+ // A synthetic candle carries the last traded price and zero activity; it never
+ // fabricates turnover or volume, which are the inputs used by the market ranker.
+func fillMissingMinuteCandles(candles []Candle, maxFill int) []Candle {
+	if len(candles) < 2 || maxFill <= 0 {
+		return candles
+	}
+	result := make([]Candle, 0, len(candles)+maxFill)
+	result = append(result, candles[0])
+	for _, current := range candles[1:] {
+		previous := result[len(result)-1]
+		missing := int(current.StartTime.Sub(previous.StartTime)/candleInterval) - 1
+		if missing > 0 {
+			fillCount := missing
+			if fillCount > maxFill {
+				fillCount = maxFill
+			}
+			firstMissing := current.StartTime.Add(-time.Duration(fillCount) * candleInterval)
+			for start := firstMissing; start.Before(current.StartTime); start = start.Add(candleInterval) {
+				price := previous.Close
+				result = append(result, Candle{
+					StartTime: start,
+					EndTime: start.Add(candleInterval - time.Millisecond),
+					Open: price, High: price, Low: price, Close: price,
+					Volume: 0, Turnover: 0, Confirmed: true, UpdatedAt: previous.UpdatedAt,
+				})
+			}
+		}
+		result = append(result, current)
 	}
 	return result
 }
