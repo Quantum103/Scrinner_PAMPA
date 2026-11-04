@@ -30,7 +30,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-rsi_scanner}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rsi_scanner}?sslmode=disable}
       DB_POOL_MAX_CONNS: ${DB_POOL_MAX_CONNS:-20}
       DB_POOL_MIN_CONNS: ${DB_POOL_MIN_CONNS:-2}
-      BYBIT_REST_URL: ${BYBIT_REST_URL:-https://api.bykit.com}
+      BYBIT_REST_URL: ${BYBIT_REST_URL:-https://api.bybit.com}
       BYBIT_PUBLIC_WS_URL: ${BYBIT_PUBLIC_WS_URL:-wss://stream.bybit.com/v5/public/linear}
       SCANNER_TIMEFRAMES: ${SCANNER_TIMEFRAMES:-5,15,60}
       RSI_LENGTH: ${RSI_LENGTH:-14}

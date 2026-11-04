@@ -38,7 +38,7 @@ Copy-Item .env.example .env
 
 Обязательно измени `POSTGRES_PASSWORD` на собственный пароль. При использовании в нём символов вроде `@`, `:` или `/` укажи в `DATABASE_URL` полную строку подключения с URL-кодированным паролем. Не публикуй `.env` и не добавляй его в Git. Если `DATABASE_URL` пуст, строка собирается автоматически из параметров PostgreSQL выше.
 
-Параметры `TELEGBAM_BOD_TOKEN` и `TELEGBAM_ALLOWED_USER_IDS` пока зарезервированы для следующих этапов.
+`TELEGRAM_BOT_TOKEN` и `TELEGRAM_ALLOWED_USER_IDS` пока зарезервированы для следующих этапов.
 
 ## Запуск
 
@@ -95,14 +95,14 @@ docker compose down -v
 | `APP_HTTP_ADDR` | `:8080` | Адрес HTTP-сервера внутри контейнера |
 | `DB_POOL_MAX_CONNS` | `20` | Максимум соединений PostgreSQL |
 | `DB_POOL_MIN_CONNS` | `2` | Минимум соединений PostgreSQL |
-| `BYBIT_REST_URL` | `https://api.bykit.com` | Публичный REST endpoint Bybit |
+| `BYBIT_REST_URL` | `https://api.bybit.com` | Публичный REST endpoint Bybit |
 | `BYBIT_PUBLIC_WS_URL` | `wss://stream.bybit.com/v5/public/linear` | Публичный WebSocket Bybit Linear |
 | `SCANNER_TIMEFRAMES` | `5,15,60` | Минутные таймфреймы |
 | `RSI_LENGTH` | `14` | Период RSI |
 | `EMA_LENGTH` | `9` | Период EMA от RSI |
 | `SCANNER_INSTRUMENT_LIMIT` | `100` | Начальное количество инструментов |
 | `SCANNER_REFRESH_INTERVAL` | `15m` | Интервал обновления каталога рынка |
-| `SCANNER_HISTORY_CANDLES  | `300` | Количество свечей для прогрева |
+| `SCANNER_HISTORY_CANDLES` | `300` | Количество свечей для прогрева |
 
 ## Миграции
 
