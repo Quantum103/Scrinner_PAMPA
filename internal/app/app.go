@@ -16,11 +16,11 @@ import (
 )
 
 type App struct {
-	pool       *pgxpool.Pool
-	storage    *storage.Repository
-	server     *http.Server
-	logger     *slog.Logger
-	config     config.Config
+	pool    *pgxpool.Pool
+	storage *storage.Repository
+	server  *http.Server
+	logger  *slog.Logger
+	config  config.Config
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {

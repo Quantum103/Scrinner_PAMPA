@@ -420,4 +420,3 @@ func TestEnqueueSignalForEligibleUsersAppliesUserFilters(t *testing.T) {
 		t.Fatalf("signal was delivered to users outside saved filters: %+v", claimed)
 	}
 }
-
