@@ -63,8 +63,12 @@ func insertSignal(ctx context.Context, tx pgx.Tx, signal Signal) (int64, bool, e
 
 func signalPeriods(signal Signal) (int, int) {
 	rsiLength, emaLength := signal.RSILength, signal.EMALength
-	if rsiLength == 0 { rsiLength = 14 }
-	if emaLength == 0 { emaLength = 9 }
+	if rsiLength == 0 {
+		rsiLength = 14
+	}
+	if emaLength == 0 {
+		emaLength = 9
+	}
 	return rsiLength, emaLength
 }
 

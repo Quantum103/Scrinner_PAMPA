@@ -480,3 +480,93 @@ func TestCommitScannedCandleAtomicallyQueuesEligibleDelivery(t *testing.T) {
 		t.Fatalf("replayed candle error = %v, want ErrStaleCandle", err)
 	}
 }
+
+
+func TestScannerProfilesHaveIndependentCursorsAndDeliveries(t *testing.T) {
+	repository, _ := testRepository(t)
+	ctx := context.Background()
+	defaultUser := createTestUser(t, repository)
+	customUser := createTestUser(t, repository)
+	customSettings, err := repository.GetOrCreateUserSettings(ctx, customUser.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customSettings.RSILength = 10
+	customSettings.EMALength = 5
+	if err := repository.UpdateUserSettings(ctx, customSettings); err != nil {
+		t.Fatal(err)
+	}
+
+	symbol := createTestInstrument(t, repository)
+	profiles, err := repository.ListScannerProfilesForPair(ctx, symbol, "5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("profiles for selected pair = %+v, want default and custom", profiles)
+	}
+	workloads, err := repository.ListScannerWorkloads(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundDefault, foundCustom := false, false
+	for _, workload := range workloads {
+		if workload.Timeframe != "5" || len(workload.Symbols) != 1 || workload.Symbols[0] != symbol {
+			continue
+		}
+		foundDefault = foundDefault || (workload.RSILength == 14 && workload.EMALength == 9)
+		foundCustom = foundCustom || (workload.RSILength == 10 && workload.EMALength == 5)
+	}
+	if !foundDefault || !foundCustom {
+		t.Fatalf("workloads omit one of the user's profiles: %+v", workloads)
+	}
+
+	start := time.Now().UTC().Truncate(5 * time.Minute).Add(-10 * time.Minute)
+	closeAt := start.Add(5 * time.Minute)
+	makeState := func(rsiLength, emaLength int) ScannerProfileState {
+		return ScannerProfileState{
+			Symbol: symbol, Timeframe: "5", RSILength: rsiLength, EMALength: emaLength,
+			LastProcessedCandleStart: start, LastClose: 101, LastRSI: 55, LastEMARSI: 52,
+			LastCrossDirection: "LONG", LastCrossAt: &closeAt, Initialized: true,
+		}
+	}
+	makeSignal := func(rsiLength, emaLength int) *Signal {
+		return &Signal{
+			Symbol: symbol, Timeframe: "5", Direction: "LONG",
+			CandleStart: start, CandleClose: closeAt, ClosePrice: 101,
+			RSI: 55, EMARSI: 52, RSILength: rsiLength, EMALength: emaLength,
+		}
+	}
+	defaultID, inserted, queued, err := repository.CommitScannerProfileCandle(ctx, makeState(14, 9), makeSignal(14, 9))
+	if err != nil || !inserted || queued != 1 {
+		t.Fatalf("default profile commit: id=%d inserted=%t queued=%d err=%v", defaultID, inserted, queued, err)
+	}
+	customID, inserted, queued, err := repository.CommitScannerProfileCandle(ctx, makeState(10, 5), makeSignal(10, 5))
+	if err != nil || !inserted || queued != 1 || customID == defaultID {
+		t.Fatalf("custom profile commit: id=%d inserted=%t queued=%d err=%v", customID, inserted, queued, err)
+	}
+	if _, err := repository.GetScannerProfileState(ctx, symbol, "5", 14, 9); err != nil {
+		t.Fatalf("load default profile cursor: %v", err)
+	}
+	if _, err := repository.GetScannerProfileState(ctx, symbol, "5", 10, 5); err != nil {
+		t.Fatalf("load custom profile cursor: %v", err)
+	}
+
+	claimed, err := repository.ClaimPendingDeliveries(ctx, 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 2 {
+		t.Fatalf("claimed %d deliveries, want two profile-specific deliveries: %+v", len(claimed), claimed)
+	}
+	delivered := make(map[int64]Delivery, len(claimed))
+	for _, delivery := range claimed {
+		delivered[delivery.UserID] = delivery
+	}
+	if got := delivered[defaultUser.ID]; got.SignalID != defaultID || got.RSILength != 14 || got.EMALength != 9 {
+		t.Fatalf("default user received wrong profile signal: %+v", got)
+	}
+	if got := delivered[customUser.ID]; got.SignalID != customID || got.RSILength != 10 || got.EMALength != 5 {
+		t.Fatalf("custom user received wrong profile signal: %+v", got)
+	}
+}

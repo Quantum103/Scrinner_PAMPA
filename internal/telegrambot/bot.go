@@ -611,13 +611,20 @@ func deliveryRetryDelay(attempt int) time.Duration {
 }
 
 func formatSignal(signal storage.Signal) string {
+	rsiLength, emaLength := signal.RSILength, signal.EMALength
+	if rsiLength == 0 {
+		rsiLength = 14
+	}
+	if emaLength == 0 {
+		emaLength = 9
+	}
 	direction := "🟢 LONG"
 	if signal.Direction == "SHORT" {
 		direction = "🔴 SHORT"
 	}
 	return fmt.Sprintf("%s · %s\n%s\nЦена закрытия: %s\nRSI(%d): %.2f · EMA RSI(%d): %.2f\nСвеча закрылась: %s UTC",
 		signal.Timeframe+"m", direction, signal.Symbol, formatPrice(signal.ClosePrice),
-		signal.RSILength, signal.RSI, signal.EMALength, signal.EMARSI, signal.CandleClose.UTC().Format("2006-01-02 15:04"))
+		rsiLength, signal.RSI, emaLength, signal.EMARSI, signal.CandleClose.UTC().Format("2006-01-02 15:04"))
 }
 
 func formatDelivery(delivery storage.Delivery) string {
