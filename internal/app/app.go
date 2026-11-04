@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
@@ -209,7 +211,7 @@ func (a *App) runScanner(ctx context.Context) {
 
 	scan := func() {
 		// Allow enough time for REST rate limiting during periodic reconciliation.
-		timeout := a.scannerTimeout()
+		timeout := a.scannerTimeout(ctx)
 		scanCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
@@ -255,25 +257,20 @@ func (a *App) runMarketData(ctx context.Context, marketChanged <-chan struct{}) 
 	}
 
 start:
+	subscriptionTicker := time.NewTicker(time.Minute)
+	defer subscriptionTicker.Stop()
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		instruments, err := a.storage.ListActiveInstruments(ctx, a.config.Scanner.InstrumentLimit)
+		subscriptions, err := a.loadMarketSubscriptions(ctx)
 		if err != nil {
 			a.logger.Error("load instruments for Bybit WebSocket subscriptions failed", "error", err)
 			if !waitForMarketRetry(ctx, marketChanged) {
 				return
 			}
 			continue
-		}
-		subscriptions := make([]bybit.KlineSubscription, 0, len(instruments)*len(a.config.Scanner.Timeframes))
-		for _, instrument := range instruments {
-			for _, timeframe := range a.config.Scanner.Timeframes {
-				subscriptions = append(subscriptions, bybit.KlineSubscription{
-					Symbol: instrument.Symbol, Timeframe: timeframe,
-				})
-			}
 		}
 		if len(subscriptions) == 0 {
 			a.logger.Warn("Bybit WebSocket has no active kline subscriptions")
@@ -287,7 +284,7 @@ start:
 		streamDone := make(chan error, 1)
 		handlers := bybit.StreamHandlers{
 			OnConnected: func(connectionCtx context.Context) error {
-				reconcileCtx, reconcileCancel := context.WithTimeout(connectionCtx, a.scannerTimeout())
+				reconcileCtx, reconcileCancel := context.WithTimeout(connectionCtx, a.scannerTimeout(connectionCtx))
 				defer reconcileCancel()
 				report, scanErr := a.signalScanner.ScanOnce(reconcileCtx)
 				if scanErr != nil {
@@ -324,33 +321,125 @@ start:
 				a.logger.Warn("Bybit public WebSocket disconnected; reconnect scheduled", "error", disconnectErr)
 			},
 		}
-		a.logger.Info("starting Bybit public WebSocket", "subscriptions", len(subscriptions))
+		a.logger.Info("starting Bybit public WebSocket",
+			"subscriptions", len(subscriptions),
+			"personalized_universe", true)
 		go func() {
 			streamDone <- a.publicStream.Run(streamCtx, subscriptions, handlers)
 		}()
 
-		select {
-		case <-ctx.Done():
-			cancel()
-			<-streamDone
-			return
-		case <-marketChanged:
-			cancel()
-			<-streamDone
-			a.logger.Info("restarting Bybit WebSocket after market catalogue refresh")
-		case streamErr := <-streamDone:
-			cancel()
-			if streamErr != nil {
-				a.logger.Error("Bybit public WebSocket stopped", "error", streamErr)
-			}
-			if !waitForMarketRetry(ctx, marketChanged) {
+		restart := false
+		for !restart {
+			select {
+			case <-ctx.Done():
+				cancel()
+				<-streamDone
 				return
+			case <-marketChanged:
+				restart = true
+				a.logger.Info("restarting Bybit WebSocket after market catalogue refresh")
+			case streamErr := <-streamDone:
+				cancel()
+				if streamErr != nil {
+					a.logger.Error("Bybit public WebSocket stopped", "error", streamErr)
+				}
+				if !waitForMarketRetry(ctx, marketChanged) {
+					return
+				}
+				restart = true
+			case <-subscriptionTicker.C:
+				updated, loadErr := a.loadMarketSubscriptions(ctx)
+				if loadErr != nil {
+					a.logger.Error("refresh personalized Bybit WebSocket subscriptions failed", "error", loadErr)
+					continue
+				}
+				if sameKlineSubscriptions(subscriptions, updated) {
+					continue
+				}
+				a.logger.Info("restarting Bybit WebSocket because user scanner settings changed",
+					"previous_subscriptions", len(subscriptions),
+					"updated_subscriptions", len(updated))
+				restart = true
 			}
 		}
+		cancel()
+		<-streamDone
 	}
 }
 
-func (a *App) scannerTimeout() time.Duration {
+func (a *App) loadMarketSubscriptions(ctx context.Context) ([]bybit.KlineSubscription, error) {
+	workloads, err := a.storage.ListScannerWorkloads(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list personalized scanner workloads: %w", err)
+	}
+
+	unique := make(map[string]bybit.KlineSubscription)
+	for _, workload := range workloads {
+		for _, symbol := range workload.Symbols {
+			key := strings.ToUpper(strings.TrimSpace(symbol)) + "/" + workload.Timeframe
+			if key == "/" {
+				continue
+			}
+			unique[key] = bybit.KlineSubscription{
+				Symbol: strings.ToUpper(strings.TrimSpace(symbol)),
+				Timeframe: workload.Timeframe,
+			}
+		}
+	}
+
+	// With no active users, retain the global scanner behaviour so the
+	// application can continue storing its default-profile market signals.
+	if len(unique) == 0 {
+		instruments, err := a.storage.ListActiveInstruments(ctx, a.config.Scanner.InstrumentLimit)
+		if err != nil {
+			return nil, fmt.Errorf("list active Bybit instruments: %w", err)
+		}
+		for _, instrument := range instruments {
+			for _, timeframe := range a.config.Scanner.Timeframes {
+				key := strings.ToUpper(strings.TrimSpace(instrument.Symbol)) + "/" + timeframe
+				unique[key] = bybit.KlineSubscription{Symbol: strings.ToUpper(strings.TrimSpace(instrument.Symbol)), Timeframe: timeframe}
+			}
+		}
+	}
+
+	subscriptions := make([]bybit.KlineSubscription, 0, len(unique))
+	for _, subscription := range unique {
+		subscriptions = append(subscriptions, subscription)
+	}
+	sort.Slice(subscriptions, func(i, j int) bool {
+		if subscriptions[i].Timeframe == subscriptions[j].Timeframe {
+			return subscriptions[i].Symbol < subscriptions[j].Symbol
+		}
+		return subscriptions[i].Timeframe < subscriptions[j].Timeframe
+	})
+	return subscriptions, nil
+}
+
+func sameKlineSubscriptions(first, second []bybit.KlineSubscription) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for index := range first {
+		if first[index] != second[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *App) scannerTimeout(ctx context.Context) time.Duration {
+	workloads, err := a.storage.ListScannerWorkloads(ctx)
+	if err == nil && len(workloads) > 0 {
+		pairs := make(map[string]struct{})
+		for _, workload := range workloads {
+			for _, symbol := range workload.Symbols {
+				pairs[strings.ToUpper(strings.TrimSpace(symbol))+"/"+workload.Timeframe] = struct{}{}
+			}
+		}
+		if len(pairs) > 0 {
+			return 2*time.Minute + time.Duration(len(pairs))*200*time.Millisecond
+		}
+	}
 	requests := a.config.Scanner.InstrumentLimit * len(a.config.Scanner.Timeframes)
 	return 2*time.Minute + time.Duration(requests)*200*time.Millisecond
 }
