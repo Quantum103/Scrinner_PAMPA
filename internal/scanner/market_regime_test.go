@@ -1,7 +1,12 @@
 package scanner
 
 import (
+	"context"
+	"math"
 	"testing"
+	"time"
+
+	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
 
 	"github.com/Quantum103/Scrinner_PAMPA/internal/indicators"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/storage"
@@ -118,4 +123,106 @@ func TestApplyMarketContextCopiesSnapshotIntoSignal(t *testing.T) {
 		signal.MarketEMA != 101 || !signal.MarketEMAReady {
 		t.Fatalf("signal market context = %+v", signal)
 	}
+}
+
+func regimeCrossoverCloses() []float64 {
+	const count = 78
+	closes := make([]float64, count)
+	for index := range closes {
+		closes[index] = 100 + 0.5*float64(index) + 0.8*math.Sin(float64(index)*0.6)
+	}
+
+	// A short pullback followed by a strong recovery creates a final LONG
+	// RSI/EMA-RSI cross while the broader market remains in an established uptrend.
+	closes[count-6] = closes[count-7] - 2
+	closes[count-5] = closes[count-6] - 2
+	closes[count-4] = closes[count-5] - 1.5
+	closes[count-3] = closes[count-4] + 0.4
+	closes[count-2] = closes[count-3] + 2
+	closes[count-1] = closes[count-2] + 3
+	return closes
+}
+
+func assertSignalHasUptrendContext(t *testing.T, signal storage.Signal) {
+	t.Helper()
+	if signal.Direction != "LONG" {
+		t.Fatalf("signal direction = %s, want LONG", signal.Direction)
+	}
+	if signal.MarketRegime != marketRegimeUptrend {
+		t.Fatalf("market regime = %s, want %s (signal=%+v)", signal.MarketRegime, marketRegimeUptrend, signal)
+	}
+	if !signal.MarketADXReady || signal.MarketADX <= marketADXTrendMin {
+		t.Fatalf("ADX snapshot is not ready or too weak: %+v", signal)
+	}
+	if !signal.MarketCHOPReady {
+		t.Fatalf("CHOP snapshot should be ready: %+v", signal)
+	}
+	if !signal.MarketEMAReady || signal.MarketEMA <= 0 {
+		t.Fatalf("EMA snapshot is not ready: %+v", signal)
+	}
+}
+
+func TestLegacyScannerAttachesMarketContextToRSISignal(t *testing.T) {
+	closes := regimeCrossoverCloses()
+	prefix := closes[:len(closes)-1]
+	service, source, repository, start := newScannerForTest(t, prefix)
+
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("initial baseline scan: %v", err)
+	}
+
+	serverTime := start.Add(time.Duration(len(closes)) * 5 * time.Minute)
+	source.serverTime = serverTime
+	source.candles[pairKey("BTCUSDT", "5")] = makeCandles("BTCUSDT", "5", closes, start, serverTime)
+	service.now = func() time.Time { return serverTime }
+
+	report, err := service.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("scan new closed candle: %v", err)
+	}
+	if report.SignalsInserted != 1 || len(repository.signals) != 1 {
+		t.Fatalf("expected one signal: report=%+v signals=%+v", report, repository.signals)
+	}
+	assertSignalHasUptrendContext(t, repository.signals[0])
+}
+
+func TestPersonalizedScannerAttachesSharedMarketContextToRSISignal(t *testing.T) {
+	closes := regimeCrossoverCloses()
+	prefix := closes[:len(closes)-1]
+	start := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	serverTime := start.Add(time.Duration(len(prefix)) * 5 * time.Minute)
+	source := &fakeSource{
+		serverTime: serverTime,
+		candles: map[string][]bybit.Candle{
+			pairKey("BTCUSDT", "5"): makeCandles("BTCUSDT", "5", prefix, start, serverTime),
+		},
+	}
+	repository := newProfileFakeRepository([]storage.ScannerWorkload{
+		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	})
+	service, err := New(source, repository, Settings{
+		Timeframes: []string{"5"}, RSILength: 3, EMALength: 2,
+		InstrumentLimit: 10, HistoryCandles: 20,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	service.now = func() time.Time { return serverTime }
+
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("initial personalized baseline scan: %v", err)
+	}
+
+	serverTime = start.Add(time.Duration(len(closes)) * 5 * time.Minute)
+	source.serverTime = serverTime
+	source.candles[pairKey("BTCUSDT", "5")] = makeCandles("BTCUSDT", "5", closes, start, serverTime)
+
+	report, err := service.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("personalized scan new closed candle: %v", err)
+	}
+	if report.SignalsInserted != 1 || len(repository.signals) != 1 {
+		t.Fatalf("expected one personalized signal: report=%+v signals=%+v", report, repository.signals)
+	}
+	assertSignalHasUptrendContext(t, repository.signals[0])
 }
