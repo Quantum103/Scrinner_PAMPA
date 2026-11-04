@@ -297,7 +297,6 @@ func ExampleScanner_ScanOnce() {
 	// RSI crosses below EMA RSI => SHORT
 }
 
-
 func TestProcessClosedWebSocketCandleUsesCachedHistoryAndDeduplicates(t *testing.T) {
 	prefix := []float64{100, 101, 102, 103, 102, 101, 100, 99, 98}
 	full := []float64{100, 101, 102, 103, 102, 101, 100, 99, 98, 99}

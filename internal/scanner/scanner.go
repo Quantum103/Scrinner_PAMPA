@@ -50,8 +50,8 @@ type Scanner struct {
 
 	// Processing is serialized so REST reconciliation and WebSocket candle
 	// events cannot advance the same durable cursor concurrently.
-	mu       sync.Mutex
-	history  map[string][]bybit.Candle
+	mu      sync.Mutex
+	history map[string][]bybit.Candle
 }
 
 func New(source MarketDataSource, repository Repository, settings Settings) (*Scanner, error) {

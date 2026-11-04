@@ -64,7 +64,7 @@ func NewPublicStream(rawURL string) (*PublicStream, error) {
 	return &PublicStream{
 		url: strings.TrimRight(rawURL, "/"),
 		dialer: &websocket.Dialer{
-			HandshakeTimeout: 10 * time.Second,
+			HandshakeTimeout:  10 * time.Second,
 			EnableCompression: false,
 		},
 		heartbeatInterval: streamHeartbeatInterval,
@@ -263,16 +263,16 @@ func parseKlineMessage(payload []byte) ([]Candle, error) {
 	symbol := strings.ToUpper(parts[2])
 
 	var values []struct {
-		Start     int64  `json:"start"`
-		End       int64  `json:"end"`
-		Interval  string `json:"interval"`
-		Open      string `json:"open"`
-		High      string `json:"high"`
-		Low       string `json:"low"`
-		Close     string `json:"close"`
-		Volume    string `json:"volume"`
-		Turnover  string `json:"turnover"`
-		Confirm   bool   `json:"confirm"`
+		Start    int64  `json:"start"`
+		End      int64  `json:"end"`
+		Interval string `json:"interval"`
+		Open     string `json:"open"`
+		High     string `json:"high"`
+		Low      string `json:"low"`
+		Close    string `json:"close"`
+		Volume   string `json:"volume"`
+		Turnover string `json:"turnover"`
+		Confirm  bool   `json:"confirm"`
 	}
 	if len(envelope.Data) == 0 {
 		return nil, errors.New("kline message has no data")

@@ -215,7 +215,6 @@ func (a *App) runScanner(ctx context.Context) {
 	}
 }
 
-
 func (a *App) runMarketData(ctx context.Context, marketChanged <-chan struct{}) {
 	// The initial catalogue refresh notification is already represented by the
 	// first subscription load below. Drain only the stale startup notification.

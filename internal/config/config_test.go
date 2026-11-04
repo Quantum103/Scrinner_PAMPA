@@ -99,7 +99,6 @@ func TestValidateRejectsInvalidScannerLimits(t *testing.T) {
 	}
 }
 
-
 func TestLoadReconcileIntervalPrefersNewVariable(t *testing.T) {
 	t.Setenv("SCANNER_SCAN_INTERVAL", "45s")
 	t.Setenv("SCANNER_RECONCILE_INTERVAL", "10m")
