@@ -481,7 +481,6 @@ func TestCommitScannedCandleAtomicallyQueuesEligibleDelivery(t *testing.T) {
 	}
 }
 
-
 func TestScannerProfilesHaveIndependentCursorsAndDeliveries(t *testing.T) {
 	repository, _ := testRepository(t)
 	ctx := context.Background()
