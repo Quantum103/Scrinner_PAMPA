@@ -624,19 +624,47 @@ func TestPersonalizedScannerRefreshesProfileRoutingCache(t *testing.T) {
 		t.Fatalf("initial cached profile routing = %+v", got)
 	}
 
-	repository.workloads = []storage.ScannerWorkload{
+	updatedWorkloads := []storage.ScannerWorkload{
 		{RSILength: 5, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
 	}
-	if _, err := service.ScanOnce(context.Background()); err != nil {
-		t.Fatalf("updated profile scan: %v", err)
+	if err := service.RefreshProfileRouting(updatedWorkloads, true); err != nil {
+		t.Fatalf("minute-level profile routing refresh: %v", err)
 	}
 	if got := service.profilePairs[key]; len(got) != 1 || got[0] != (storage.ScannerProfile{RSILength: 5, EMALength: 2}) {
 		t.Fatalf("profile routing cache was not refreshed: %+v", got)
+	}
+	if source.calls != 1 {
+		t.Fatalf("profile routing refresh unexpectedly performed REST reconciliation: calls=%d", source.calls)
 	}
 	if service.hasActiveProfileUsers != true {
 		t.Fatal("active profile user state was not retained in routing cache")
 	}
 	if repository.profilePairLookups != 0 {
 		t.Fatalf("profile cache refresh unexpectedly used per-pair lookups: %d", repository.profilePairLookups)
+	}
+}
+
+func TestPersonalizedWebSocketFailsClosedBeforeProfileCacheInitialization(t *testing.T) {
+	start := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	serverTime := start.Add(5 * time.Minute)
+	source := &fakeSource{serverTime: serverTime}
+	repository := newProfileFakeRepository([]storage.ScannerWorkload{
+		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	})
+	service, err := New(source, repository, Settings{
+		Timeframes: []string{"5"}, RSILength: 3, EMALength: 2,
+		InstrumentLimit: 10, HistoryCandles: 20,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	candle := makeCandles("BTCUSDT", "5", []float64{100}, start, serverTime)[0]
+	if _, err := service.ProcessClosedCandle(context.Background(), candle); err == nil {
+		t.Fatal("ProcessClosedCandle() must fail closed before personalized routing is initialized")
+	}
+	if len(repository.fakeRepository.states) != 0 || len(repository.signals) != 0 {
+		t.Fatalf("uninitialized profile cache fell back to legacy processing: states=%+v signals=%+v",
+			repository.fakeRepository.states, repository.signals)
 	}
 }

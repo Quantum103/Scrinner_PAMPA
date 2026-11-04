@@ -64,8 +64,9 @@ type Scanner struct {
 
 	// Active profile routing is refreshed together with REST reconciliation.
 	// WebSocket candle handling must not issue profile-discovery SQL per event.
-	profilePairs           map[string][]storage.ScannerProfile
-	hasActiveProfileUsers  bool
+	profilePairs          map[string][]storage.ScannerProfile
+	hasActiveProfileUsers bool
+	profileCacheReady     bool
 }
 
 func New(source MarketDataSource, repository Repository, settings Settings) (*Scanner, error) {
@@ -192,8 +193,24 @@ func (s *Scanner) refreshProfileCacheLocked(workloads []storage.ScannerWorkload,
 		profilesByPair[key] = profiles
 	}
 	s.profilePairs = profilesByPair
-	s.hasActiveProfileUsers = hasUsers
+	s.hasActiveProfileUsers = hasUsers || len(workloads) > 0
+	s.profileCacheReady = true
 	return nil
+}
+
+// RefreshProfileRouting updates the WebSocket routing cache without running
+// REST candle reconciliation. The app calls it during its minute-level
+// subscription refresh so RSI/EMA changes do not wait for the slower scan timer.
+func (s *Scanner) RefreshProfileRouting(workloads []storage.ScannerWorkload, hasUsers bool) error {
+	if s == nil {
+		return errors.New("scanner is nil")
+	}
+	if s.profileRepository == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refreshProfileCacheLocked(workloads, hasUsers)
 }
 
 func (s *Scanner) scanLegacyOnceLocked(ctx context.Context) (Report, error) {
@@ -350,6 +367,9 @@ func (s *Scanner) ProcessClosedCandle(ctx context.Context, candle bybit.Candle) 
 	defer s.mu.Unlock()
 
 	if s.profileRepository != nil {
+		if !s.profileCacheReady {
+			return Report{}, errors.New("personalized scanner profile cache is not initialized; run ScanOnce before processing WebSocket candles")
+		}
 		symbol := strings.ToUpper(strings.TrimSpace(candle.Symbol))
 		if symbol == "" {
 			return Report{}, errors.New("WebSocket candle symbol is required")

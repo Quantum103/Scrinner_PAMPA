@@ -390,16 +390,17 @@ func (a *App) loadMarketSubscriptions(ctx context.Context) ([]bybit.KlineSubscri
 		}
 	}
 
-	// With no active users, retain the global scanner behaviour so the
-	// application can continue storing its default-profile market signals.
-	if len(unique) == 0 {
-		hasUsers, err := a.storage.HasActiveScannerUsers(ctx)
+	// When workloads are present, at least one active user needs these
+	// subscriptions. With no workloads, distinguish an empty active-user
+	// universe from the no-user legacy mode.
+	hasUsers := len(workloads) > 0
+	if len(unique) == 0 && !hasUsers {
+		hasUsers, err = a.storage.HasActiveScannerUsers(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("check active Telegram scanner users: %w", err)
 		}
-		if hasUsers {
-			return nil, nil
-		}
+	}
+	if len(unique) == 0 && !hasUsers {
 		instruments, err := a.storage.ListActiveInstruments(ctx, a.config.Scanner.InstrumentLimit)
 		if err != nil {
 			return nil, fmt.Errorf("list active Bybit instruments: %w", err)
@@ -410,6 +411,9 @@ func (a *App) loadMarketSubscriptions(ctx context.Context) ([]bybit.KlineSubscri
 				unique[key] = bybit.KlineSubscription{Symbol: strings.ToUpper(strings.TrimSpace(instrument.Symbol)), Timeframe: timeframe}
 			}
 		}
+	}
+	if err := a.signalScanner.RefreshProfileRouting(workloads, hasUsers); err != nil {
+		return nil, fmt.Errorf("refresh scanner profile routing: %w", err)
 	}
 
 	subscriptions := make([]bybit.KlineSubscription, 0, len(unique))
@@ -440,14 +444,12 @@ func sameKlineSubscriptions(first, second []bybit.KlineSubscription) bool {
 func (a *App) scannerTimeout(ctx context.Context) time.Duration {
 	workloads, err := a.storage.ListScannerWorkloads(ctx)
 	if err == nil && len(workloads) > 0 {
-		pairs := make(map[string]struct{})
+		profilePairs := 0
 		for _, workload := range workloads {
-			for _, symbol := range workload.Symbols {
-				pairs[strings.ToUpper(strings.TrimSpace(symbol))+"/"+workload.Timeframe] = struct{}{}
-			}
+			profilePairs += len(workload.Symbols)
 		}
-		if len(pairs) > 0 {
-			return 2*time.Minute + time.Duration(len(pairs))*200*time.Millisecond
+		if profilePairs > 0 {
+			return 2*time.Minute + time.Duration(profilePairs)*200*time.Millisecond
 		}
 	}
 	requests := a.config.Scanner.InstrumentLimit * len(a.config.Scanner.Timeframes)
