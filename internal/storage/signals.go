@@ -350,6 +350,32 @@ func (r *Repository) CreateSignalDeliveries(ctx context.Context, signalID int64,
 
 // ClaimPendingDeliveries leases work atomically across concurrent notification workers.
 func (r *Repository) ClaimPendingDeliveries(ctx context.Context, limit int, lease time.Duration) ([]Delivery, error) {
+	return r.claimPendingDeliveries(ctx, limit, lease, nil)
+}
+
+// ClaimPendingDeliveriesForUsers restricts queue claims to the configured
+// Telegram allowlist. Filtering happens before LIMIT so unrelated rows cannot
+// starve deliveries for authorized users.
+func (r *Repository) ClaimPendingDeliveriesForUsers(ctx context.Context, limit int, lease time.Duration, telegramIDs []int64) ([]Delivery, error) {
+	if len(telegramIDs) == 0 {
+		return nil, fmt.Errorf("%w: Telegram delivery allowlist must not be empty", ErrInvalidInput)
+	}
+	seen := make(map[int64]struct{}, len(telegramIDs))
+	unique := make([]int64, 0, len(telegramIDs))
+	for _, id := range telegramIDs {
+		if id <= 0 {
+			return nil, fmt.Errorf("%w: Telegram delivery allowlist contains an invalid ID", ErrInvalidInput)
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return r.claimPendingDeliveries(ctx, limit, lease, unique)
+}
+
+func (r *Repository) claimPendingDeliveries(ctx context.Context, limit int, lease time.Duration, telegramIDs []int64) ([]Delivery, error) {
 	if limit < 1 || limit > 1000 || lease <= 0 {
 		return nil, fmt.Errorf("%w: delivery limit or lease is invalid", ErrInvalidInput)
 	}
@@ -357,9 +383,14 @@ func (r *Repository) ClaimPendingDeliveries(ctx context.Context, limit int, leas
 		WITH candidates AS (
 			SELECT d.user_id, d.signal_id
 			FROM signal_deliveries d
-			WHERE d.status = 'pending'
-			   OR (d.status = 'failed' AND COALESCE(d.next_attempt_at, now()) <= now())
-			   OR (d.status = 'sending' AND d.lease_until <= now())
+			JOIN telegram_users eligible_user ON eligible_user.id = d.user_id
+			WHERE (
+				d.status = 'pending'
+				OR (d.status = 'failed' AND COALESCE(d.next_attempt_at, now()) <= now())
+				OR (d.status = 'sending' AND d.lease_until <= now())
+			)
+			  AND eligible_user.is_active = TRUE
+			  AND ($3::bigint[] IS NULL OR eligible_user.telegram_id = ANY($3))
 			ORDER BY d.created_at, d.user_id
 			LIMIT $1
 			FOR UPDATE OF d SKIP LOCKED
@@ -379,7 +410,7 @@ func (r *Repository) ClaimPendingDeliveries(ctx context.Context, limit int, leas
 		RETURNING d.user_id, u.telegram_id, d.signal_id, d.status, d.attempt_count,
 		          s.symbol, s.timeframe, s.direction, s.candle_start, s.candle_close,
 		          s.close_price::float8, s.rsi::float8, s.ema_rsi::float8, s.detected_at
-	`, limit, lease.Seconds())
+	`, limit, lease.Seconds(), telegramIDs)
 	if err != nil {
 		return nil, fmt.Errorf("claim pending signal deliveries: %w", err)
 	}

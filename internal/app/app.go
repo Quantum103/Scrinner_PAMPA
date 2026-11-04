@@ -15,6 +15,7 @@ import (
 	"github.com/Quantum103/Scrinner_PAMPA/internal/migrations"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/scanner"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/storage"
+	"github.com/Quantum103/Scrinner_PAMPA/internal/telegrambot"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -27,6 +28,7 @@ type App struct {
 	marketSync    *market.Synchronizer
 	signalScanner *scanner.Scanner
 	publicStream  *bybit.PublicStream
+	telegramBot   *telegrambot.Bot
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -84,6 +86,24 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return nil, fmt.Errorf("initialize RSI scanner: %w", err)
 	}
 
+	var telegramBotInstance *telegrambot.Bot
+	switch {
+	case cfg.Telegram.BotToken == "":
+		if len(cfg.Telegram.AllowedUsers) > 0 {
+			logger.Warn("Telegram bot is disabled because TELEGRAM_BOT_TOKEN is empty")
+		}
+	case len(cfg.Telegram.AllowedUsers) == 0:
+		logger.Warn("Telegram bot is disabled because TELEGRAM_ALLOWED_USER_IDS is empty")
+	default:
+		telegramBotInstance, err = telegrambot.New(
+			cfg.Telegram.BotToken, cfg.Telegram.AllowedUsers, repository, logger,
+		)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("initialize Telegram bot: %w", err)
+		}
+	}
+
 	server := &http.Server{
 		Addr:              cfg.App.HTTPAddr,
 		Handler:           healthHandler(pool.Ping),
@@ -93,13 +113,21 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 
 	return &App{
 		pool: pool, storage: repository, server: server, logger: logger,
-		config: cfg, marketSync: marketSync, signalScanner: signalScanner, publicStream: publicStream,
+		config: cfg, marketSync: marketSync, signalScanner: signalScanner,
+		publicStream: publicStream, telegramBot: telegramBotInstance,
 	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if a.telegramBot != nil {
+		go func() {
+			if err := a.telegramBot.Run(runCtx); err != nil && runCtx.Err() == nil {
+				a.logger.Error("Telegram bot stopped unexpectedly", "error", err)
+			}
+		}()
+	}
 	marketReady := make(chan struct{})
 	marketChanged := make(chan struct{}, 1)
 	go a.runMarketSync(runCtx, marketReady, marketChanged)

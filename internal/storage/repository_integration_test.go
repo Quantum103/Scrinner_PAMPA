@@ -281,6 +281,28 @@ func TestSignalDeduplicationDeliveryRetryAndUserHistory(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("signal count = %d, want 1", count)
 	}
+
+	nextSignal := signal
+	nextSignal.CandleStart = signal.CandleStart.Add(5 * time.Minute)
+	nextSignal.CandleClose = signal.CandleClose.Add(5 * time.Minute)
+	nextSignal.DetectedAt = time.Now().UTC()
+	nextSignalID, nextInserted, err := repository.SaveSignal(ctx, nextSignal)
+	if err != nil || !nextInserted {
+		t.Fatalf("save allowlist test signal: id=%d inserted=%t err=%v", nextSignalID, nextInserted, err)
+	}
+	if err := repository.CreateSignalDeliveries(ctx, nextSignalID, []int64{user.ID, otherUser.ID}); err != nil {
+		t.Fatalf("create allowlist test deliveries: %v", err)
+	}
+	authorized, err := repository.ClaimPendingDeliveriesForUsers(ctx, 10, time.Minute, []int64{otherUser.TelegramID})
+	if err != nil {
+		t.Fatalf("claim deliveries for allowlisted user: %v", err)
+	}
+	if len(authorized) != 1 || authorized[0].TelegramID != otherUser.TelegramID {
+		t.Fatalf("allowlist did not restrict claimed deliveries: %+v", authorized)
+	}
+	if _, err := repository.ClaimPendingDeliveriesForUsers(ctx, 10, time.Minute, nil); err == nil {
+		t.Fatal("empty Telegram delivery allowlist must be rejected")
+	}
 }
 
 func TestScannerStateInitializationAndAtomicCandleCommit(t *testing.T) {
