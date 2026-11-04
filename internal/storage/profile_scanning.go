@@ -74,9 +74,7 @@ func (r *Repository) ListScannerWorkloads(ctx context.Context) ([]ScannerWorkloa
 			  AND excluded.symbol = instrument.symbol
 			  AND excluded.preference = 'exclude'
 		  )
-		ORDER BY settings.rsi_length, settings.ema_length,
-		         CASE tf.timeframe WHEN '5' THEN 1 WHEN '15' THEN 2 ELSE 3 END,
-		         instrument.symbol
+		ORDER BY settings.rsi_length, settings.ema_length, tf.timeframe, instrument.symbol
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list personalized scanner workloads: %w", err)

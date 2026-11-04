@@ -390,6 +390,13 @@ func (a *App) loadMarketSubscriptions(ctx context.Context) ([]bybit.KlineSubscri
 	// With no active users, retain the global scanner behaviour so the
 	// application can continue storing its default-profile market signals.
 	if len(unique) == 0 {
+		hasUsers, err := a.storage.HasActiveScannerUsers(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("check active Telegram scanner users: %w", err)
+		}
+		if hasUsers {
+			return nil, nil
+		}
 		instruments, err := a.storage.ListActiveInstruments(ctx, a.config.Scanner.InstrumentLimit)
 		if err != nil {
 			return nil, fmt.Errorf("list active Bybit instruments: %w", err)
