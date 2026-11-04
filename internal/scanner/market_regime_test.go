@@ -311,7 +311,7 @@ func TestPersonalizedScannerFiltersSidewaysCrossAndAdvancesCursor(t *testing.T) 
 	serverTime := start.Add(52 * 5 * time.Minute)
 	source := &fakeSource{
 		serverTime: serverTime,
-		candles: map[string][]bybit.Candle{pairKey("BTCUSDT", "5"): prefix},
+		candles:    map[string][]bybit.Candle{pairKey("BTCUSDT", "5"): prefix},
 	}
 	repository := newProfileFakeRepository([]storage.ScannerWorkload{
 		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
