@@ -143,10 +143,10 @@ func TestCalculateMarketIndicatorsFlatWindowDoesNotProduceNaN(t *testing.T) {
 func TestCalculateMarketIndicatorsRejectsInvalidPeriods(t *testing.T) {
 	candles := trendingMarketCandles(5)
 	tests := []struct {
-		name      string
-		adxPeriod int
+		name       string
+		adxPeriod  int
 		chopPeriod int
-		emaPeriod int
+		emaPeriod  int
 	}{
 		{name: "ADX too short", adxPeriod: 1, chopPeriod: 14, emaPeriod: 50},
 		{name: "ADX too long", adxPeriod: 501, chopPeriod: 14, emaPeriod: 50},
