@@ -39,8 +39,6 @@ jobs:
         run: go mod download
       - name: Verify formatting
         run: |
-          gofmt -w internal/storage/repository_integration_test.go internal/storage/validation_test.go
-          git diff --unified=3 -- internal/storage/repository_integration_test.go internal/storage/validation_test.go
           unformatted="$(gofmt -l ./cmd ./internal)"
           if [ -n "$unformatted" ]; then
             echo "The following Go files are not gofmt-formatted:"

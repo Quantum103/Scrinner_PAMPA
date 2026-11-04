@@ -103,8 +103,8 @@ func TestValidateSignal(t *testing.T) {
 func TestValidateScannerState(t *testing.T) {
 	now := time.Now().UTC()
 	state := ScannerState{
-		Symbol:                    "BTCUSDT",
-		Timeframe:                 "5",
+		Symbol:                   "BTCUSDT",
+		Timeframe:                "5",
 		LastProcessedCandleStart: now,
 		LastClose:                100,
 		LastRSI:                  50,
