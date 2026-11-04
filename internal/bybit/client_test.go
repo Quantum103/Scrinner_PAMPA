@@ -228,3 +228,35 @@ func TestGetKlinesAtReusesProvidedServerTime(t *testing.T) {
 		t.Fatal("empty exchange time must be rejected")
 	}
 }
+
+func TestGetKlinesAtSupportsFourHourIntervalAndAsOfBoundary(t *testing.T) {
+	asOf := time.Date(2026, 11, 4, 10, 50, 0, 0, time.UTC)
+	closedStart := time.Date(2026, 11, 4, 4, 0, 0, 0, time.UTC).UnixMilli()
+	openStart := time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC).UnixMilli()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("interval") != "240" {
+			t.Fatalf("unexpected interval: %s", r.URL.RawQuery)
+		}
+		if got := r.URL.Query().Get("end"); got != strconv.FormatInt(asOf.UnixMilli(), 10) {
+			t.Fatalf("request end = %q, want %d", got, asOf.UnixMilli())
+		}
+		writeResult(w, map[string]any{"list": [][]string{
+			{strconv.FormatInt(openStart, 10), "102", "103", "101", "102", "20", "2000"},
+			{strconv.FormatInt(closedStart, 10), "101", "102", "100", "101", "10", "1000"},
+		}})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candles, err := client.GetKlinesAt(context.Background(), "BTCUSDT", "240", 52, asOf)
+	if err != nil {
+		t.Fatalf("GetKlinesAt(240) error = %v", err)
+	}
+	if len(candles) != 1 || candles[0].Start.UnixMilli() != closedStart ||
+		!candles[0].Close.Equal(time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC)) {
+		t.Fatalf("unexpected 4h closed candles: %+v", candles)
+	}
+}

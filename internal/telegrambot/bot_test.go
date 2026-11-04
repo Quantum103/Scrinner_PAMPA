@@ -368,3 +368,33 @@ func TestFormatDeliveryPreservesSidewaysMarketContext(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatSignalShowsHigherTimeframeTrendAboveMarketContext(t *testing.T) {
+	message := formatSignal(storage.Signal{
+		Symbol: "BTCUSDT", Timeframe: "30", Direction: "LONG",
+		ClosePrice: 65000, RSI: 32.5, EMARSI: 30.25,
+		HigherTimeframe: "240", HigherMarketRegime: "UPTREND",
+		MarketRegime: "TRANSITIONAL",
+	})
+	for _, expected := range []string{
+		"Тренд старшего ТФ (4h): 📈 ВОСХОДЯЩИЙ ТРЕНД",
+		"Рынок: 🔄 ПЕРЕХОДНОЕ СОСТОЯНИЕ",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("formatted signal does not contain %q: %s", expected, message)
+		}
+	}
+	if strings.Index(message, "Тренд старшего ТФ") > strings.Index(message, "Рынок:") {
+		t.Fatalf("higher timeframe trend should appear above lower-timeframe context: %s", message)
+	}
+}
+
+func TestFormatDeliveryPreservesHigherTimeframeTrend(t *testing.T) {
+	message := formatDelivery(storage.Delivery{
+		Symbol: "ETHUSDT", Timeframe: "30", Direction: "SHORT",
+		HigherTimeframe: "240", HigherMarketRegime: "DOWNTREND",
+	})
+	if !strings.Contains(message, "Тренд старшего ТФ (4h): 📉 НИСХОДЯЩИЙ ТРЕНД") {
+		t.Fatalf("formatted delivery lost higher-timeframe trend: %s", message)
+	}
+}
