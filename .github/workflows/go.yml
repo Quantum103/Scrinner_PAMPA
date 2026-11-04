@@ -48,9 +48,11 @@ jobs:
       - name: Build
         run: go build ./...
       - name: Indicator benchmarks
-        run: go test ./internal/indicators -run '^ -bench '^BenchmarkCalculate -benchmem -benchtime=1x
+        run: go test ./internal/indicators -run=^NoTestsWillMatch -bench=BenchmarkCalculate -benchmem -benchtime=1x
       - name: Scanner load benchmarks
-        run: go test ./internal/scanner -run '^ -bench 'Benchmark(PersonalizedScan|ProfileRoutingCache) -benchmem -benchtime=1x
+        run: |
+          go test ./internal/scanner -run=^NoTestsWillMatch -bench=BenchmarkPersonalizedScan -benchmem -benchtime=1x
+          go test ./internal/scanner -run=^NoTestsWillMatch -bench=BenchmarkProfileRoutingCache -benchmem -benchtime=1x
       - name: Create isolated benchmark database
         run: |
           postgres_container="$(docker ps --filter "ancestor=postgres:18-alpine" --format "{{.ID}}" | head -n 1)"
@@ -62,4 +64,6 @@ jobs:
       - name: PostgreSQL load benchmarks
         env:
           DATABASE_BENCH_URL: postgres://rsi_test:rsi_test@localhost:5432/rsi_scanner_bench?sslmode=disable
-        run: go test ./internal/storage -run '^ -bench 'Benchmark(ListScannerWorkloads|CommitScannerProfileCandleWithoutSignal) -benchmem -benchtime=1x
+        run: |
+          go test ./internal/storage -run=^NoTestsWillMatch -bench=BenchmarkListScannerWorkloads -benchmem -benchtime=1x
+          go test ./internal/storage -run=^NoTestsWillMatch -bench=BenchmarkCommitScannerProfileCandleWithoutSignal -benchmem -benchtime=1x

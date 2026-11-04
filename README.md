@@ -120,8 +120,9 @@ curl http://localhost:8080/health/ready
 Запуск CPU/alloc benchmarks:
 
 ```bash
-go test ./internal/indicators -run '^$' -bench '^BenchmarkCalculate$' -benchmem -count=5
-go test ./internal/scanner -run '^$' -bench 'Benchmark(PersonalizedScan|ProfileRoutingCache)$' -benchmem -benchtime=1x
+go test ./internal/indicators -run=^NoTestsWillMatch -bench=BenchmarkCalculate -benchmem -count=5
+go test ./internal/scanner -run=^NoTestsWillMatch -bench=BenchmarkPersonalizedScan -benchmem -benchtime=1x
+go test ./internal/scanner -run=^NoTestsWillMatch -bench=BenchmarkProfileRoutingCache -benchmem -benchtime=1x
 ```
 
 PostgreSQL benchmarks требуют отдельной тестовой базы с точным именем `rsi_scanner_bench`. Они очищают таблицы `telegram_users` и `instruments` перед заполнением синтетическими данными. Не указывай здесь рабочую базу приложения.
@@ -136,14 +137,15 @@ Linux/macOS:
 
 ```bash
 export DATABASE_BENCH_URL='postgres://rsi_test:rsi_test@localhost:5432/rsi_scanner_bench?sslmode=disable'
-go test ./internal/storage -run '^$' -bench 'Benchmark(ListScannerWorkloads|CommitScannerProfileCandleWithoutSignal)$' -benchmem -benchtime=1x
+go test ./internal/storage -run=^NoTestsWillMatch -bench=BenchmarkListScannerWorkloads -benchmem -benchtime=1x
+go test ./internal/storage -run=^NoTestsWillMatch -bench=BenchmarkCommitScannerProfileCandleWithoutSignal -benchmem -benchtime=1x
 ```
 
 Windows PowerShell:
 
 ```powershell
 $env:DATABASE_BENCH_URL = 'postgres://rsi_test:rsi_test@localhost:5432/rsi_scanner_bench?sslmode=disable'
-go test ./internal/storage -run '^$' -bench 'Benchmark(ListScannerWorkloads|CommitScannerProfileCandleWithoutSignal)$' -benchmem -benchtime=1x
+go test ./internal/storage -run=^NoTestsWillMatch -bench=BenchmarkListScannerWorkloads -benchmem -benchtime=1x
 ```
 
 GitHub Actions автоматически выполняет эти benchmarks с `-benchtime=1x` и сохраняет показатели в логах workflow. Локальный запуск позволяет повторить замеры несколько раз. Benchmark выводит время на операцию и allocations. Сравнивать результаты следует на одной машине, с одинаковой версией Go и конфигурацией PostgreSQL. Эти benchmarks не подключаются к Bybit и не создают Telegram-уведомления.
