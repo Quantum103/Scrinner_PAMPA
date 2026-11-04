@@ -11,14 +11,16 @@ import (
 
 	"github.com/Quantum103/Scrinner_PAMPA/internal/config"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/migrations"
+	"github.com/Quantum103/Scrinner_PAMPA/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type App struct {
-	pool   *pgxpool.Pool
-	server *http.Server
-	logger *slog.Logger
-	config config.Config
+	pool       *pgxpool.Pool
+	storage    *storage.Repository
+	server     *http.Server
+	logger     *slog.Logger
+	config     config.Config
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -46,6 +48,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		pool.Close()
 		return nil, fmt.Errorf("run database migrations: %w", err)
 	}
+	repository, err := storage.New(pool)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize PostgreSQL repository: %w", err)
+	}
 
 	server := &http.Server{
 		Addr:              cfg.App.HTTPAddr,
@@ -54,7 +61,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		IdleTimeout:       60 * time.Second,
 	}
 
-	return &App{pool: pool, server: server, logger: logger, config: cfg}, nil
+	return &App{pool: pool, storage: repository, server: server, logger: logger, config: cfg}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -84,6 +91,11 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+// Storage exposes the PostgreSQL repository to application services.
+func (a *App) Storage() *storage.Repository {
+	return a.storage
 }
 
 func (a *App) Close() {
