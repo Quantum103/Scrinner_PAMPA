@@ -718,7 +718,26 @@ func formatSignal(signal storage.Signal) string {
 	message := fmt.Sprintf("%s · %s\n%s\nЦена закрытия: %s\nRSI(%d): %.2f · EMA RSI(%d): %.2f\nСвеча закрылась: %s UTC",
 		signal.Timeframe+"m", direction, signal.Symbol, formatPrice(signal.ClosePrice),
 		rsiLength, signal.RSI, emaLength, signal.EMARSI, signal.CandleClose.UTC().Format("2006-01-02 15:04"))
-	return message + formatMarketContext(signal)
+	return message + formatHigherTimeframeTrend(signal) + formatMarketContext(signal)
+}
+
+func formatHigherTimeframeTrend(signal storage.Signal) string {
+	timeframe := "4h"
+	if signal.HigherTimeframe != "" && signal.HigherTimeframe != "240" {
+		timeframe = signal.HigherTimeframe + "m"
+	}
+	label := "❔ НЕДОСТАТОЧНО ДАННЫХ"
+	switch strings.ToUpper(strings.TrimSpace(signal.HigherMarketRegime)) {
+	case "SIDEWAYS":
+		label = "⚠️ БОКОВОЕ ДВИЖЕНИЕ"
+	case "UPTREND":
+		label = "📈 ВОСХОДЯЩИЙ ТРЕНД"
+	case "DOWNTREND":
+		label = "📉 НИСХОДЯЩИЙ ТРЕНД"
+	case "TRANSITIONAL":
+		label = "🔄 ПЕРЕХОДНОЕ СОСТОЯНИЕ"
+	}
+	return fmt.Sprintf("\\nТренд старшего ТФ (%s): %s", timeframe, label)
 }
 
 func formatMarketContext(signal storage.Signal) string {
@@ -774,9 +793,11 @@ func formatDelivery(delivery storage.Delivery) string {
 		MarketADXReady:  delivery.MarketADXReady,
 		MarketCHOP:      delivery.MarketCHOP,
 		MarketCHOPReady: delivery.MarketCHOPReady,
-		MarketEMA:       delivery.MarketEMA,
-		MarketEMAReady:  delivery.MarketEMAReady,
-		DetectedAt:      delivery.DetectedAt,
+		MarketEMA:          delivery.MarketEMA,
+		MarketEMAReady:     delivery.MarketEMAReady,
+		HigherTimeframe:    delivery.HigherTimeframe,
+		HigherMarketRegime: delivery.HigherMarketRegime,
+		DetectedAt:         delivery.DetectedAt,
 	})
 }
 

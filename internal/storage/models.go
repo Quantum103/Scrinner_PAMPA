@@ -73,6 +73,9 @@ type Signal struct {
 	MarketEMA       float64
 	MarketEMAReady  bool
 
+	HigherTimeframe    string
+	HigherMarketRegime string
+
 	DetectedAt time.Time
 }
 
@@ -115,6 +118,9 @@ type Delivery struct {
 	MarketCHOPReady bool
 	MarketEMA       float64
 	MarketEMAReady  bool
+
+	HigherTimeframe    string
+	HigherMarketRegime string
 
 	DetectedAt time.Time
 }

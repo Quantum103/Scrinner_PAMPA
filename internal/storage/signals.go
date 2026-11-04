@@ -42,17 +42,20 @@ func insertSignal(ctx context.Context, tx pgx.Tx, signal Signal) (int64, bool, e
 		nullableMarketValue(signal.MarketADX, signal.MarketADXReady),
 		nullableMarketValue(signal.MarketCHOP, signal.MarketCHOPReady),
 		nullableMarketValue(signal.MarketEMA, signal.MarketEMAReady),
+		normalizedHigherTimeframe(signal.HigherTimeframe),
+		normalizedMarketRegime(signal.HigherMarketRegime),
 	}
 	var id int64
 	err := tx.QueryRow(ctx, `
 		INSERT INTO signals (
 			symbol, timeframe, direction, candle_start, candle_close,
 			close_price, rsi, ema_rsi, rsi_length, ema_length, detected_at,
-			market_regime, market_adx, market_chop, market_ema
+			market_regime, market_adx, market_chop, market_ema,
+			higher_timeframe, higher_market_regime
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()),
-			$12, $13, $14, $15
+			$12, $13, $14, $15, $16, $17
 		)
 		ON CONFLICT (symbol, timeframe, candle_start, direction, rsi_length, ema_length) DO NOTHING
 		RETURNING id
@@ -100,6 +103,13 @@ func normalizedMarketRegime(value string) string {
 	return regime
 }
 
+func normalizedHigherTimeframe(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "240"
+	}
+	return strings.TrimSpace(value)
+}
+
 func nullableMarketValue(value float64, ready bool) any {
 	if !ready {
 		return nil
@@ -133,6 +143,14 @@ func validateSignal(signal Signal) error {
 	case "UNKNOWN", "SIDEWAYS", "UPTREND", "DOWNTREND", "TRANSITIONAL":
 	default:
 		return fmt.Errorf("%w: unsupported market regime %q", ErrInvalidInput, signal.MarketRegime)
+	}
+	if normalizedHigherTimeframe(signal.HigherTimeframe) != "240" {
+		return fmt.Errorf("%w: higher timeframe must be 240 minutes", ErrInvalidInput)
+	}
+	switch normalizedMarketRegime(signal.HigherMarketRegime) {
+	case "UNKNOWN", "SIDEWAYS", "UPTREND", "DOWNTREND", "TRANSITIONAL":
+	default:
+		return fmt.Errorf("%w: unsupported higher market regime %q", ErrInvalidInput, signal.HigherMarketRegime)
 	}
 	marketValues := map[string]float64{
 		"market ADX":  signal.MarketADX,
@@ -503,7 +521,8 @@ func (r *Repository) claimPendingDeliveries(ctx context.Context, limit int, leas
 		          s.market_regime,
 		          COALESCE(s.market_adx::float8, 0), s.market_adx IS NOT NULL,
 		          COALESCE(s.market_chop::float8, 0), s.market_chop IS NOT NULL,
-		          COALESCE(s.market_ema::float8, 0), s.market_ema IS NOT NULL
+		          COALESCE(s.market_ema::float8, 0), s.market_ema IS NOT NULL,
+		          s.higher_timeframe, s.higher_market_regime
 	`, limit, lease.Seconds(), telegramIDs)
 	if err != nil {
 		return nil, fmt.Errorf("claim pending signal deliveries: %w", err)
@@ -521,6 +540,7 @@ func (r *Repository) claimPendingDeliveries(ctx context.Context, limit int, leas
 			&item.MarketADX, &item.MarketADXReady,
 			&item.MarketCHOP, &item.MarketCHOPReady,
 			&item.MarketEMA, &item.MarketEMAReady,
+			&item.HigherTimeframe, &item.HigherMarketRegime,
 		); err != nil {
 			return nil, fmt.Errorf("scan claimed signal delivery: %w", err)
 		}
@@ -596,7 +616,8 @@ func (r *Repository) ListUserSignals(ctx context.Context, userID int64, filters 
 		       s.market_regime,
 		       COALESCE(s.market_adx::float8, 0), s.market_adx IS NOT NULL,
 		       COALESCE(s.market_chop::float8, 0), s.market_chop IS NOT NULL,
-		       COALESCE(s.market_ema::float8, 0), s.market_ema IS NOT NULL
+		       COALESCE(s.market_ema::float8, 0), s.market_ema IS NOT NULL,
+		       s.higher_timeframe, s.higher_market_regime
 		FROM signal_deliveries d
 		JOIN signals s ON s.id = d.signal_id
 		WHERE d.user_id = $1
@@ -623,6 +644,7 @@ func (r *Repository) ListUserSignals(ctx context.Context, userID int64, filters 
 			&item.MarketADX, &item.MarketADXReady,
 			&item.MarketCHOP, &item.MarketCHOPReady,
 			&item.MarketEMA, &item.MarketEMAReady,
+			&item.HigherTimeframe, &item.HigherMarketRegime,
 		); err != nil {
 			return nil, fmt.Errorf("scan user signal history: %w", err)
 		}

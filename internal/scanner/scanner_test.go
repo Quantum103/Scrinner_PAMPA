@@ -27,7 +27,7 @@ func (f *fakeSource) GetKlinesAt(_ context.Context, symbol, timeframe string, li
 	if f.err != nil {
 		return nil, f.err
 	}
-	if limit < 1 || !serverTime.Equal(f.serverTime) {
+	if limit < 1 || serverTime.IsZero() || serverTime.After(f.serverTime) {
 		return nil, errors.New("invalid kline request")
 	}
 	return append([]bybit.Candle(nil), f.candles[pairKey(symbol, timeframe)]...), nil
@@ -314,8 +314,8 @@ func TestProcessClosedWebSocketCandleUsesCachedHistoryAndDeduplicates(t *testing
 		repository.signals[0].Direction != "LONG" {
 		t.Fatalf("expected one LONG signal from WebSocket candle: report=%+v signals=%+v", report, repository.signals)
 	}
-	if source.calls != 1 {
-		t.Fatalf("contiguous WebSocket candle unexpectedly fetched REST history: calls=%d", source.calls)
+	if source.calls != 2 {
+		t.Fatalf("contiguous WebSocket candle should fetch lower history and one 4h context request: calls=%d", source.calls)
 	}
 
 	replay, err := service.ProcessClosedCandle(context.Background(), candle)
@@ -343,8 +343,8 @@ func TestProcessClosedWebSocketCandleBackfillsMissedCandles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessClosedCandle() gap recovery error = %v", err)
 	}
-	if source.calls != 2 {
-		t.Fatalf("gap recovery should make one REST request, calls=%d", source.calls)
+	if source.calls != 3 {
+		t.Fatalf("gap recovery should fetch one lower backfill and one 4h context: calls=%d", source.calls)
 	}
 	if report.SignalsInserted != 2 || len(repository.signals) != 2 {
 		t.Fatalf("REST backfill did not recover both missed crossovers: report=%+v signals=%+v", report, repository.signals)
@@ -586,8 +586,8 @@ func TestPersonalizedWebSocketCandleIsProfileAwareAndDeduplicated(t *testing.T) 
 	if replay.SignalsInserted != 0 || len(repository.signals) != 1 {
 		t.Fatalf("replayed personalized WebSocket candle duplicated signal: report=%+v signals=%+v", replay, repository.signals)
 	}
-	if source.calls != 1 {
-		t.Fatalf("contiguous personalized WebSocket candle must reuse cached history, calls=%d", source.calls)
+	if source.calls != 2 {
+		t.Fatalf("personalized WebSocket candle should fetch lower history and one 4h context: calls=%d", source.calls)
 	}
 	if repository.profilePairLookups != 0 || repository.activeUserChecks != 0 {
 		t.Fatalf("WebSocket hot path queried profile routing in PostgreSQL: pair_lookups=%d active_user_checks=%d",
@@ -703,5 +703,49 @@ func TestNewAccepts30MinuteTimeframe(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("New() rejected 30-minute timeframe: %v", err)
+	}
+}
+
+func TestScannerAttachesConfirmedFourHourTrendWithoutLookahead(t *testing.T) {
+	prefix := []float64{100, 101, 102, 103, 102, 101, 100, 99, 98}
+	full := []float64{100, 101, 102, 103, 102, 101, 100, 99, 98, 99}
+	service, source, repository, start := newScannerForTest(t, prefix)
+
+	fourHourStart := time.Date(2026, 10, 26, 16, 0, 0, 0, time.UTC)
+	fourHourCloses := make([]float64, 53)
+	for index := range fourHourCloses {
+		fourHourCloses[index] = 1000 + float64(index)
+	}
+	fourHourCloses[len(fourHourCloses)-1] = 900
+	fourHourCandles := make([]bybit.Candle, len(fourHourCloses))
+	for index, closePrice := range fourHourCloses {
+		candleStart := fourHourStart.Add(time.Duration(index) * 4 * time.Hour)
+		fourHourCandles[index] = bybit.Candle{
+			Symbol: "BTCUSDT", Timeframe: higherMarketTimeframe,
+			Start: candleStart, Close: candleStart.Add(4 * time.Hour),
+			Open: closePrice, High: closePrice + 0.5, Low: closePrice - 0.5,
+			ClosePrice: closePrice, Volume: 1, Turnover: closePrice,
+		}
+	}
+	// The final 4h candle closes after the lower-timeframe signal and must be ignored.
+	source.candles[pairKey("BTCUSDT", higherMarketTimeframe)] = fourHourCandles
+
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("initial lower-timeframe baseline: %v", err)
+	}
+	source.serverTime = start.Add(time.Duration(len(full)) * 5 * time.Minute)
+	service.now = func() time.Time { return source.serverTime }
+	source.candles[pairKey("BTCUSDT", "5")] = makeCandles("BTCUSDT", "5", full, start, source.serverTime)
+
+	report, err := service.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("scan signal with higher timeframe context: %v", err)
+	}
+	if report.SignalsInserted != 1 || len(repository.signals) != 1 {
+		t.Fatalf("expected one lower-timeframe signal: report=%+v signals=%+v", report, repository.signals)
+	}
+	signal := repository.signals[0]
+	if signal.HigherTimeframe != "240" || signal.HigherMarketRegime != marketRegimeUptrend {
+		t.Fatalf("higher-timeframe trend = %s/%s, want 240/UPTREND", signal.HigherTimeframe, signal.HigherMarketRegime)
 	}
 }

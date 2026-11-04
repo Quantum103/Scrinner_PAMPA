@@ -248,6 +248,7 @@ func (c *Client) GetKlinesAt(ctx context.Context, symbol, timeframe string, limi
 	query := url.Values{
 		"category": {"linear"}, "symbol": {symbol},
 		"interval": {timeframe}, "limit": {strconv.Itoa(limit)},
+		"end": {strconv.FormatInt(serverTime.UnixMilli(), 10)},
 	}
 	var response struct {
 		List [][]string
@@ -308,8 +309,10 @@ func timeframeDuration(timeframe string) (time.Duration, error) {
 		return 30 * time.Minute, nil
 	case "60":
 		return time.Hour, nil
+	case "240":
+		return 4 * time.Hour, nil
 	default:
-		return 0, fmt.Errorf("unsupported Bybit timeframe %q: supported values are 5, 15, 30 and 60", timeframe)
+		return 0, fmt.Errorf("unsupported Bybit timeframe %q: supported values are 5, 15, 30, 60 and 240", timeframe)
 	}
 }
 

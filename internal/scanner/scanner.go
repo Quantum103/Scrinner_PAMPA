@@ -54,6 +54,13 @@ type Report struct {
 	DeliveriesQueued        int64
 }
 
+type higherTrendCacheEntry struct {
+	bucketClose time.Time
+	regime      string
+}
+
+const higherMarketTimeframe = "240"
+
 type Scanner struct {
 	source            MarketDataSource
 	repository        Repository
@@ -71,6 +78,7 @@ type Scanner struct {
 	profilePairs          map[string][]storage.ScannerProfile
 	hasActiveProfileUsers bool
 	profileCacheReady     bool
+	higherTrendCache      map[string]higherTrendCacheEntry
 }
 
 func New(source MarketDataSource, repository Repository, settings Settings) (*Scanner, error) {
@@ -90,6 +98,7 @@ func New(source MarketDataSource, repository Repository, settings Settings) (*Sc
 		source: source, repository: repository, profileRepository: profileRepository, settings: settings,
 		now: time.Now, history: make(map[string][]bybit.Candle),
 		profilePairs: make(map[string][]storage.ScannerProfile),
+		higherTrendCache: make(map[string]higherTrendCacheEntry),
 	}, nil
 }
 
@@ -677,6 +686,9 @@ func (s *Scanner) processProfilePairCandlesLocked(
 				filteredSideways = true
 				signal = nil
 			}
+			if signal != nil {
+				s.applyHigherTimeframeTrend(ctx, signal)
+			}
 		}
 		signalID, inserted, queued, err := s.profileRepository.CommitScannerProfileCandle(ctx, next, signal)
 		if errors.Is(err, storage.ErrStaleCandle) {
@@ -830,6 +842,9 @@ func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timefram
 				filteredSideways = true
 				signal = nil
 			}
+			if signal != nil {
+				s.applyHigherTimeframeTrend(ctx, signal)
+			}
 		}
 
 		signalID, inserted, queued, err := s.repository.CommitScannedCandle(ctx, next, signal)
@@ -872,8 +887,71 @@ func mergeCandles(first, second []bybit.Candle) []bybit.Candle {
 	return result
 }
 
+
+func candleTimeframeDuration(timeframe string) (time.Duration, error) {
+	if timeframe == higherMarketTimeframe {
+		return 4 * time.Hour, nil
+	}
+	return timeframeDuration(timeframe)
+}
+
+// applyHigherTimeframeTrend attaches the 4h market regime using only candles
+// fully closed by the signal candle's close time. A temporary REST failure
+// leaves the context UNKNOWN and never suppresses an otherwise valid RSI signal.
+func (s *Scanner) applyHigherTimeframeTrend(ctx context.Context, signal *storage.Signal) {
+	if signal == nil {
+		return
+	}
+	signal.HigherTimeframe = higherMarketTimeframe
+	signal.HigherMarketRegime = marketRegimeUnknown
+	if signal.CandleClose.IsZero() {
+		return
+	}
+	if s.higherTrendCache == nil {
+		s.higherTrendCache = make(map[string]higherTrendCacheEntry)
+	}
+
+	asOf := signal.CandleClose.UTC()
+	bucketClose := asOf.Truncate(4 * time.Hour)
+	cacheKey := strings.ToUpper(strings.TrimSpace(signal.Symbol))
+	if cached, ok := s.higherTrendCache[cacheKey]; ok && cached.bucketClose.Equal(bucketClose) {
+		signal.HigherMarketRegime = cached.regime
+		return
+	}
+
+	candles, err := s.source.GetKlinesAt(
+		ctx, signal.Symbol, higherMarketTimeframe, minimumMarketHistory(0), asOf,
+	)
+	if err != nil {
+		return
+	}
+	closed, err := normalizeCandles(candles, signal.Symbol, higherMarketTimeframe, asOf)
+	if err != nil {
+		return
+	}
+	if len(closed) > minimumMarketHistory(0) {
+		closed = closed[len(closed)-minimumMarketHistory(0):]
+	}
+	if len(closed) < minimumMarketHistory(0) {
+		s.higherTrendCache[cacheKey] = higherTrendCacheEntry{
+			bucketClose: bucketClose, regime: marketRegimeUnknown,
+		}
+		return
+	}
+
+	points, err := calculateMarketPoints(closed)
+	if err != nil {
+		return
+	}
+	snapshot := marketSnapshotAtWithThresholds(points, len(points)-1, s.marketRegimeThresholds())
+	signal.HigherMarketRegime = snapshot.regime
+	s.higherTrendCache[cacheKey] = higherTrendCacheEntry{
+		bucketClose: bucketClose, regime: snapshot.regime,
+	}
+}
+
 func normalizeCandles(candles []bybit.Candle, symbol, timeframe string, serverTime time.Time) ([]bybit.Candle, error) {
-	interval, err := timeframeDuration(timeframe)
+	interval, err := candleTimeframeDuration(timeframe)
 	if err != nil {
 		return nil, err
 	}
