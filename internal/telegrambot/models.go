@@ -20,10 +20,10 @@ type telegramChat struct {
 }
 
 type telegramMessage struct {
-	MessageID int64          `json:"message_id"`
-	From      *telegramUser  `json:"from"`
-	Chat      telegramChat   `json:"chat"`
-	Text      string         `json:"text"`
+	MessageID int64         `json:"message_id"`
+	From      *telegramUser `json:"from"`
+	Chat      telegramChat  `json:"chat"`
+	Text      string        `json:"text"`
 }
 
 type telegramCallback struct {

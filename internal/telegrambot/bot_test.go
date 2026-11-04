@@ -50,7 +50,7 @@ type fakeTelegramRepository struct {
 
 func newFakeTelegramRepository() *fakeTelegramRepository {
 	return &fakeTelegramRepository{
-		users: make(map[int64]storage.TelegramUser),
+		users:    make(map[int64]storage.TelegramUser),
 		settings: make(map[int64]storage.UserSettings),
 	}
 }

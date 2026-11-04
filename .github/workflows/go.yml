@@ -37,8 +37,6 @@ jobs:
           cache: true
       - name: Download Go modules
         run: go mod download
-      - name: Print formatting diagnostics
-        run: gofmt -d ./internal/telegrambot/bot.go ./internal/telegrambot/bot_test.go ./internal/telegrambot/models.go
       - name: Verify formatting
         run: test -z "$(gofmt -l ./cmd ./internal)"
       - name: Test (unit and PostgreSQL integration)

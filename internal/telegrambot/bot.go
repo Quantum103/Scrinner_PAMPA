@@ -43,10 +43,10 @@ type telegramAPI interface {
 }
 
 type Bot struct {
-	api       telegramAPI
+	api        telegramAPI
 	repository Repository
-	logger    *slog.Logger
-	allowed   map[int64]struct{}
+	logger     *slog.Logger
+	allowed    map[int64]struct{}
 	allowedIDs []int64
 }
 
@@ -691,5 +691,5 @@ func wait(ctx context.Context, duration time.Duration) bool {
 
 const (
 	startText = "Сначала отправьте /start, чтобы зарегистрировать аккаунт."
-	helpText = "RSI Scanner отслеживает пересечения RSI и EMA RSI на закрытых свечах Bybit USDT Perpetual.\n\n/start — главное меню\n/signals — последние сигналы\n/history — история сигналов\n/settings — настройки и фильтры\n/instruments — ручные правила инструментов\n/include BTCUSDT — включить инструмент\n/exclude BTCUSDT — исключить инструмент\n/reset BTCUSDT — удалить правило"
+	helpText  = "RSI Scanner отслеживает пересечения RSI и EMA RSI на закрытых свечах Bybit USDT Perpetual.\n\n/start — главное меню\n/signals — последние сигналы\n/history — история сигналов\n/settings — настройки и фильтры\n/instruments — ручные правила инструментов\n/include BTCUSDT — включить инструмент\n/exclude BTCUSDT — исключить инструмент\n/reset BTCUSDT — удалить правило"
 )
