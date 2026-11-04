@@ -296,3 +296,61 @@ func ExampleScanner_ScanOnce() {
 	// RSI crosses above EMA RSI => LONG
 	// RSI crosses below EMA RSI => SHORT
 }
+
+
+func TestProcessClosedWebSocketCandleUsesCachedHistoryAndDeduplicates(t *testing.T) {
+	prefix := []float64{100, 101, 102, 103, 102, 101, 100, 99, 98}
+	full := []float64{100, 101, 102, 103, 102, 101, 100, 99, 98, 99}
+	service, source, repository, start := newScannerForTest(t, prefix)
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("initial scan: %v", err)
+	}
+
+	candle := makeCandles("BTCUSDT", "5", full, start, source.serverTime)[len(full)-1]
+	report, err := service.ProcessClosedCandle(context.Background(), candle)
+	if err != nil {
+		t.Fatalf("ProcessClosedCandle() error = %v", err)
+	}
+	if report.SignalsInserted != 1 || len(repository.signals) != 1 ||
+		repository.signals[0].Direction != "LONG" {
+		t.Fatalf("expected one LONG signal from WebSocket candle: report=%+v signals=%+v", report, repository.signals)
+	}
+	if source.calls != 1 {
+		t.Fatalf("contiguous WebSocket candle unexpectedly fetched REST history: calls=%d", source.calls)
+	}
+
+	replay, err := service.ProcessClosedCandle(context.Background(), candle)
+	if err != nil {
+		t.Fatalf("duplicate ProcessClosedCandle() error = %v", err)
+	}
+	if replay.SignalsInserted != 0 || len(repository.signals) != 1 {
+		t.Fatalf("duplicate WebSocket event generated another signal: report=%+v signals=%+v", replay, repository.signals)
+	}
+}
+
+func TestProcessClosedWebSocketCandleBackfillsMissedCandles(t *testing.T) {
+	prefix := []float64{100, 99, 98, 99, 100, 101}
+	full := []float64{100, 99, 98, 99, 100, 101, 100, 99, 98, 97, 98, 99, 100, 101}
+	service, source, repository, start := newScannerForTest(t, prefix)
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("initial scan: %v", err)
+	}
+
+	source.candles[pairKey("BTCUSDT", "5")] = makeCandles("BTCUSDT", "5", full, start, source.serverTime.Add(40*time.Minute))
+	source.serverTime = source.serverTime.Add(40 * time.Minute)
+	last := makeCandles("BTCUSDT", "5", full, start, source.serverTime)[len(full)-1]
+
+	report, err := service.ProcessClosedCandle(context.Background(), last)
+	if err != nil {
+		t.Fatalf("ProcessClosedCandle() gap recovery error = %v", err)
+	}
+	if source.calls != 2 {
+		t.Fatalf("gap recovery should make one REST request, calls=%d", source.calls)
+	}
+	if report.SignalsInserted != 2 || len(repository.signals) != 2 {
+		t.Fatalf("REST backfill did not recover both missed crossovers: report=%+v signals=%+v", report, repository.signals)
+	}
+	if repository.signals[0].Direction != "SHORT" || repository.signals[1].Direction != "LONG" {
+		t.Fatalf("unexpected recovered signals: %+v", repository.signals)
+	}
+}

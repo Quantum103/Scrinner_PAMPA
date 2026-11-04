@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
@@ -46,6 +47,11 @@ type Scanner struct {
 	repository Repository
 	settings   Settings
 	now        func() time.Time
+
+	// Processing is serialized so REST reconciliation and WebSocket candle
+	// events cannot advance the same durable cursor concurrently.
+	mu       sync.Mutex
+	history  map[string][]bybit.Candle
 }
 
 func New(source MarketDataSource, repository Repository, settings Settings) (*Scanner, error) {
@@ -59,7 +65,10 @@ func New(source MarketDataSource, repository Repository, settings Settings) (*Sc
 		return nil, err
 	}
 	settings.Timeframes = append([]string(nil), settings.Timeframes...)
-	return &Scanner{source: source, repository: repository, settings: settings, now: time.Now}, nil
+	return &Scanner{
+		source: source, repository: repository, settings: settings,
+		now: time.Now, history: make(map[string][]bybit.Candle),
+	}, nil
 }
 
 func validateSettings(settings Settings) error {
@@ -91,9 +100,12 @@ func validateSettings(settings Settings) error {
 	return nil
 }
 
-// ScanOnce processes the configured top instruments using one exchange-time
-// snapshot. Every pair has its own durable cursor in PostgreSQL.
+// ScanOnce reconciles every configured pair against REST using one exchange-time
+// snapshot. It is used for initial history loading and periodic recovery.
 func (s *Scanner) ScanOnce(ctx context.Context) (Report, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	instruments, err := s.repository.ListActiveInstruments(ctx, s.settings.InstrumentLimit)
 	if err != nil {
 		return Report{}, fmt.Errorf("list active Bybit instruments: %w", err)
@@ -119,7 +131,7 @@ func (s *Scanner) ScanOnce(ctx context.Context) (Report, error) {
 			continue
 		}
 		for _, timeframe := range s.settings.Timeframes {
-			pairReport, err := s.scanPair(ctx, symbol, timeframe, serverTime)
+			pairReport, err := s.scanPairLocked(ctx, symbol, timeframe, serverTime)
 			if err != nil {
 				scanErrors = append(scanErrors, fmt.Errorf("%s %s: %w", symbol, timeframe, err))
 				continue
@@ -133,13 +145,76 @@ func (s *Scanner) ScanOnce(ctx context.Context) (Report, error) {
 	return report, errors.Join(scanErrors...)
 }
 
+// ProcessClosedCandle consumes a confirmed WebSocket candle. The in-memory
+// history is populated by ScanOnce; on an unexpected gap it backfills that
+// pair from REST before calculating indicators.
+func (s *Scanner) ProcessClosedCandle(ctx context.Context, candle bybit.Candle) (Report, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	symbol := strings.ToUpper(strings.TrimSpace(candle.Symbol))
+	if symbol == "" {
+		return Report{}, errors.New("WebSocket candle symbol is required")
+	}
+	if _, err := timeframeDuration(candle.Timeframe); err != nil {
+		return Report{}, err
+	}
+	closed, err := normalizeCandles([]bybit.Candle{candle}, symbol, candle.Timeframe, candle.Close)
+	if err != nil {
+		return Report{}, fmt.Errorf("validate WebSocket candle: %w", err)
+	}
+	if len(closed) != 1 {
+		return Report{}, errors.New("WebSocket confirmed candle was not closed")
+	}
+	candle = closed[0]
+
+	key := historyKey(symbol, candle.Timeframe)
+	history := s.history[key]
+	if len(history) > 0 && !candle.Start.After(history[len(history)-1].Start) {
+		return Report{PairsScanned: 1}, nil
+	}
+
+	needsBackfill := len(history) < s.settings.RSILength+s.settings.EMALength+1
+	if len(history) > 0 {
+		interval, _ := timeframeDuration(candle.Timeframe)
+		needsBackfill = needsBackfill || candle.Start.After(history[len(history)-1].Start.Add(interval))
+	}
+	if needsBackfill {
+		serverTime, err := s.source.GetServerTime(ctx)
+		if err != nil {
+			return Report{}, fmt.Errorf("get exchange time for WebSocket gap recovery: %w", err)
+		}
+		recovered, err := s.source.GetKlinesAt(ctx, symbol, candle.Timeframe, s.settings.HistoryCandles, serverTime)
+		if err != nil {
+			return Report{}, fmt.Errorf("backfill %s %s after WebSocket gap: %w", symbol, candle.Timeframe, err)
+		}
+		normalized, err := normalizeCandles(recovered, symbol, candle.Timeframe, serverTime)
+		if err != nil {
+			return Report{}, fmt.Errorf("normalize REST recovery candles: %w", err)
+		}
+		history = mergeCandles(normalized, []bybit.Candle{candle})
+	} else {
+		history = mergeCandles(history, []bybit.Candle{candle})
+	}
+
+	if len(history) > s.settings.HistoryCandles {
+		history = history[len(history)-s.settings.HistoryCandles:]
+	}
+	pairReport, err := s.processPairCandlesLocked(ctx, symbol, candle.Timeframe, history)
+	report := Report{PairsScanned: 1}
+	report.CandlesProcessed = pairReport.CandlesProcessed
+	report.SignalsInserted = pairReport.SignalsInserted
+	report.DeliveriesQueued = pairReport.DeliveriesQueued
+	return report, err
+}
+
 type pairReport struct {
 	CandlesProcessed int
 	SignalsInserted  int
 	DeliveriesQueued int64
 }
 
-func (s *Scanner) scanPair(ctx context.Context, symbol, timeframe string, serverTime time.Time) (pairReport, error) {
+func (s *Scanner) scanPairLocked(ctx context.Context, symbol, timeframe string, serverTime time.Time) (pairReport, error) {
 	candles, err := s.source.GetKlinesAt(ctx, symbol, timeframe, s.settings.HistoryCandles, serverTime)
 	if err != nil {
 		return pairReport{}, fmt.Errorf("load closed candles: %w", err)
@@ -148,9 +223,18 @@ func (s *Scanner) scanPair(ctx context.Context, symbol, timeframe string, server
 	if err != nil {
 		return pairReport{}, err
 	}
+	return s.processPairCandlesLocked(ctx, symbol, timeframe, closed)
+}
+
+func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timeframe string, closed []bybit.Candle) (pairReport, error) {
 	if len(closed) == 0 {
 		return pairReport{}, nil
 	}
+	closed = append([]bybit.Candle(nil), closed...)
+	if len(closed) > s.settings.HistoryCandles {
+		closed = closed[len(closed)-s.settings.HistoryCandles:]
+	}
+	s.history[historyKey(symbol, timeframe)] = closed
 
 	closes := make([]float64, len(closed))
 	for index, candle := range closed {
@@ -193,7 +277,10 @@ func (s *Scanner) scanPair(ctx context.Context, symbol, timeframe string, server
 		}
 		point := points[index]
 		if !point.RSIReady || !point.EMAReady {
-			return report, fmt.Errorf("indicator warm-up is incomplete at candle %s", candle.Start.Format(time.RFC3339))
+			// If downtime exceeded the retained history window, older candles no
+			// longer have enough warm-up data. Skip them and resume at the first
+			// fully calculated point without generating a false crossover.
+			continue
 		}
 
 		next := state
@@ -255,6 +342,22 @@ func (s *Scanner) scanPair(ctx context.Context, symbol, timeframe string, server
 	return report, nil
 }
 
+func mergeCandles(first, second []bybit.Candle) []bybit.Candle {
+	byStart := make(map[int64]bybit.Candle, len(first)+len(second))
+	for _, candle := range first {
+		byStart[candle.Start.UnixMilli()] = candle
+	}
+	for _, candle := range second {
+		byStart[candle.Start.UnixMilli()] = candle
+	}
+	result := make([]bybit.Candle, 0, len(byStart))
+	for _, candle := range byStart {
+		result = append(result, candle)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Start.Before(result[j].Start) })
+	return result
+}
+
 func normalizeCandles(candles []bybit.Candle, symbol, timeframe string, serverTime time.Time) ([]bybit.Candle, error) {
 	interval, err := timeframeDuration(timeframe)
 	if err != nil {
@@ -289,6 +392,10 @@ func normalizeCandles(candles []bybit.Candle, symbol, timeframe string, serverTi
 func contiguous(previous, current bybit.Candle, timeframe string) bool {
 	interval, err := timeframeDuration(timeframe)
 	return err == nil && current.Start.Equal(previous.Start.Add(interval))
+}
+
+func historyKey(symbol, timeframe string) string {
+	return strings.ToUpper(symbol) + "/" + timeframe
 }
 
 func timeframeDuration(timeframe string) (time.Duration, error) {

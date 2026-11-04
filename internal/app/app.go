@@ -26,6 +26,7 @@ type App struct {
 	config        config.Config
 	marketSync    *market.Synchronizer
 	signalScanner *scanner.Scanner
+	publicStream  *bybit.PublicStream
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -63,6 +64,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		pool.Close()
 		return nil, fmt.Errorf("initialize Bybit REST client: %w", err)
 	}
+	publicStream, err := bybit.NewPublicStream(cfg.Bybit.PublicWSURL)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize Bybit public WebSocket: %w", err)
+	}
 	marketSync, err := market.NewSynchronizer(restClient, repository)
 	if err != nil {
 		pool.Close()
@@ -87,7 +93,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 
 	return &App{
 		pool: pool, storage: repository, server: server, logger: logger,
-		config: cfg, marketSync: marketSync, signalScanner: signalScanner,
+		config: cfg, marketSync: marketSync, signalScanner: signalScanner, publicStream: publicStream,
 	}, nil
 }
 
@@ -95,11 +101,13 @@ func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	marketReady := make(chan struct{})
-	go a.runMarketSync(runCtx, marketReady)
+	marketChanged := make(chan struct{}, 1)
+	go a.runMarketSync(runCtx, marketReady, marketChanged)
 	go func() {
 		select {
 		case <-marketReady:
-			a.runScanner(runCtx)
+			go a.runScanner(runCtx)
+			a.runMarketData(runCtx, marketChanged)
 		case <-runCtx.Done():
 			return
 		}
@@ -133,7 +141,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-func (a *App) runMarketSync(ctx context.Context, initialSyncDone chan<- struct{}) {
+func (a *App) runMarketSync(ctx context.Context, initialSyncDone chan<- struct{}, marketChanged chan<- struct{}) {
 	ticker := time.NewTicker(a.config.Scanner.RefreshInterval)
 	defer ticker.Stop()
 
@@ -149,6 +157,10 @@ func (a *App) runMarketSync(ctx context.Context, initialSyncDone chan<- struct{}
 			"instruments", stats.Instruments,
 			"with_ticker", stats.WithTicker,
 		)
+		select {
+		case marketChanged <- struct{}{}:
+		default:
+		}
 	}
 
 	refresh()
@@ -168,15 +180,14 @@ func (a *App) runScanner(ctx context.Context) {
 	defer ticker.Stop()
 
 	scan := func() {
-		// Allow enough time for the REST rate limiter to serialize the configured pairs.
-		requests := a.config.Scanner.InstrumentLimit * len(a.config.Scanner.Timeframes)
-		timeout := 2*time.Minute + time.Duration(requests)*200*time.Millisecond
+		// Allow enough time for REST rate limiting during periodic reconciliation.
+		timeout := a.scannerTimeout()
 		scanCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
 		report, err := a.signalScanner.ScanOnce(scanCtx)
 		if err != nil {
-			a.logger.Error("RSI scanner cycle completed with errors",
+			a.logger.Error("REST scanner reconciliation completed with errors",
 				"error", err,
 				"instruments", report.Instruments,
 				"pairs_scanned", report.PairsScanned,
@@ -185,7 +196,7 @@ func (a *App) runScanner(ctx context.Context) {
 			)
 			return
 		}
-		a.logger.Info("RSI scanner cycle completed",
+		a.logger.Info("REST scanner reconciliation completed",
 			"instruments", report.Instruments,
 			"pairs_scanned", report.PairsScanned,
 			"candles_processed", report.CandlesProcessed,
@@ -194,7 +205,6 @@ func (a *App) runScanner(ctx context.Context) {
 		)
 	}
 
-	scan()
 	for {
 		select {
 		case <-ctx.Done():
@@ -202,6 +212,132 @@ func (a *App) runScanner(ctx context.Context) {
 		case <-ticker.C:
 			scan()
 		}
+	}
+}
+
+
+func (a *App) runMarketData(ctx context.Context, marketChanged <-chan struct{}) {
+	// The initial catalogue refresh notification is already represented by the
+	// first subscription load below. Drain only the stale startup notification.
+	for {
+		select {
+		case <-marketChanged:
+		default:
+			goto start
+		}
+	}
+
+start:
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		instruments, err := a.storage.ListActiveInstruments(ctx, a.config.Scanner.InstrumentLimit)
+		if err != nil {
+			a.logger.Error("load instruments for Bybit WebSocket subscriptions failed", "error", err)
+			if !waitForMarketRetry(ctx, marketChanged) {
+				return
+			}
+			continue
+		}
+		subscriptions := make([]bybit.KlineSubscription, 0, len(instruments)*len(a.config.Scanner.Timeframes))
+		for _, instrument := range instruments {
+			for _, timeframe := range a.config.Scanner.Timeframes {
+				subscriptions = append(subscriptions, bybit.KlineSubscription{
+					Symbol: instrument.Symbol, Timeframe: timeframe,
+				})
+			}
+		}
+		if len(subscriptions) == 0 {
+			a.logger.Warn("Bybit WebSocket has no active kline subscriptions")
+			if !waitForMarketRetry(ctx, marketChanged) {
+				return
+			}
+			continue
+		}
+
+		streamCtx, cancel := context.WithCancel(ctx)
+		streamDone := make(chan error, 1)
+		handlers := bybit.StreamHandlers{
+			OnConnected: func(connectionCtx context.Context) error {
+				reconcileCtx, reconcileCancel := context.WithTimeout(connectionCtx, a.scannerTimeout())
+				defer reconcileCancel()
+				report, scanErr := a.signalScanner.ScanOnce(reconcileCtx)
+				if scanErr != nil {
+					a.logger.Error("REST backfill after Bybit WebSocket connection completed with partial errors",
+						"error", scanErr, "pairs_scanned", report.PairsScanned,
+						"candles_processed", report.CandlesProcessed, "signals_inserted", report.SignalsInserted)
+					if report.PairsScanned == 0 {
+						return scanErr
+					}
+				}
+				a.logger.Info("REST backfill after Bybit WebSocket connection completed",
+					"pairs_scanned", report.PairsScanned,
+					"candles_processed", report.CandlesProcessed,
+					"signals_inserted", report.SignalsInserted)
+				return nil
+			},
+			OnCandle: func(candleCtx context.Context, candle bybit.Candle) error {
+				report, processErr := a.signalScanner.ProcessClosedCandle(candleCtx, candle)
+				if processErr != nil {
+					a.logger.Error("confirmed Bybit WebSocket candle processing failed",
+						"symbol", candle.Symbol, "timeframe", candle.Timeframe,
+						"candle_start", candle.Start, "error", processErr)
+					return processErr
+				}
+				if report.SignalsInserted > 0 {
+					a.logger.Info("RSI signal detected from Bybit WebSocket candle",
+						"symbol", candle.Symbol, "timeframe", candle.Timeframe,
+						"signals_inserted", report.SignalsInserted,
+						"deliveries_queued", report.DeliveriesQueued)
+				}
+				return nil
+			},
+			OnDisconnect: func(disconnectErr error) {
+				a.logger.Warn("Bybit public WebSocket disconnected; reconnect scheduled", "error", disconnectErr)
+			},
+		}
+		a.logger.Info("starting Bybit public WebSocket", "subscriptions", len(subscriptions))
+		go func() {
+			streamDone <- a.publicStream.Run(streamCtx, subscriptions, handlers)
+		}()
+
+		select {
+		case <-ctx.Done():
+			cancel()
+			<-streamDone
+			return
+		case <-marketChanged:
+			cancel()
+			<-streamDone
+			a.logger.Info("restarting Bybit WebSocket after market catalogue refresh")
+		case streamErr := <-streamDone:
+			cancel()
+			if streamErr != nil {
+				a.logger.Error("Bybit public WebSocket stopped", "error", streamErr)
+			}
+			if !waitForMarketRetry(ctx, marketChanged) {
+				return
+			}
+		}
+	}
+}
+
+func (a *App) scannerTimeout() time.Duration {
+	requests := a.config.Scanner.InstrumentLimit * len(a.config.Scanner.Timeframes)
+	return 2*time.Minute + time.Duration(requests)*200*time.Millisecond
+}
+
+func waitForMarketRetry(ctx context.Context, marketChanged <-chan struct{}) bool {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-marketChanged:
+		return true
+	case <-timer.C:
+		return true
 	}
 }
 

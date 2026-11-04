@@ -74,7 +74,7 @@ func Load() (Config, error) {
 			EMALength:       9,
 			InstrumentLimit: 100,
 			RefreshInterval: 15 * time.Minute,
-			ScanInterval:    time.Minute,
+			ScanInterval:    time.Hour,
 			HistoryCandles:  300,
 		},
 	}
@@ -86,7 +86,12 @@ func Load() (Config, error) {
 	if cfg.Scanner.RefreshInterval, err = durationEnv("SCANNER_REFRESH_INTERVAL", cfg.Scanner.RefreshInterval); err != nil {
 		return Config{}, err
 	}
-	if cfg.Scanner.ScanInterval, err = durationEnv("SCANNER_SCAN_INTERVAL", cfg.Scanner.ScanInterval); err != nil {
+	reconcileEnv := "SCANNER_RECONCILE_INTERVAL"
+	if strings.TrimSpace(os.Getenv(reconcileEnv)) == "" {
+		// Keep the previous variable working for existing .env files.
+		reconcileEnv = "SCANNER_SCAN_INTERVAL"
+	}
+	if cfg.Scanner.ScanInterval, err = durationEnv(reconcileEnv, cfg.Scanner.ScanInterval); err != nil {
 		return Config{}, err
 	}
 	if cfg.Database.MaxConns, err = int32Env("DB_POOL_MAX_CONNS", cfg.Database.MaxConns); err != nil {
@@ -156,7 +161,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("SCANNER_REFRESH_INTERVAL must be positive")
 	}
 	if c.Scanner.ScanInterval <= 0 {
-		return fmt.Errorf("SCANNER_SCAN_INTERVAL must be positive")
+		return fmt.Errorf("SCANNER_RECONCILE_INTERVAL must be positive")
 	}
 	if c.Scanner.HistoryCandles < c.Scanner.RSILength+c.Scanner.EMALength || c.Scanner.HistoryCandles > 1000 {
 		return fmt.Errorf("SCANNER_HISTORY_CANDLES must be between RSI_LENGTH + EMA_LENGTH and 1000")

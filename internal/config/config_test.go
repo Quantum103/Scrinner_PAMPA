@@ -10,6 +10,8 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("APP_LOG_LEVEL", "")
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("SCANNER_TIMEFRAMES", "")
+	t.Setenv("SCANNER_RECONCILE_INTERVAL", "")
+	t.Setenv("SCANNER_SCAN_INTERVAL", "")
 	t.Setenv("TELEGRAM_ALLOWED_USER_IDS", "")
 
 	cfg, err := Load()
@@ -22,8 +24,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Scanner.InstrumentLimit != 100 {
 		t.Fatalf("instrument limit = %d, want 100", cfg.Scanner.InstrumentLimit)
 	}
-	if cfg.Scanner.ScanInterval != time.Minute {
-		t.Fatalf("scan interval = %s, want 1m", cfg.Scanner.ScanInterval)
+	if cfg.Scanner.ScanInterval != time.Hour {
+		t.Fatalf("reconcile interval = %s, want 1h", cfg.Scanner.ScanInterval)
 	}
 	if !reflect.DeepEqual(cfg.Scanner.Timeframes, []string{"5", "15", "60"}) {
 		t.Fatalf("timeframes = %#v", cfg.Scanner.Timeframes)
@@ -94,5 +96,18 @@ func TestValidateRejectsInvalidScannerLimits(t *testing.T) {
 	cfg.Scanner.ScanInterval = 0
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() expected an error for a zero scanner interval")
+	}
+}
+
+
+func TestLoadReconcileIntervalPrefersNewVariable(t *testing.T) {
+	t.Setenv("SCANNER_SCAN_INTERVAL", "45s")
+	t.Setenv("SCANNER_RECONCILE_INTERVAL", "10m")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Scanner.ScanInterval != 10*time.Minute {
+		t.Fatalf("reconcile interval = %s, want 10m", cfg.Scanner.ScanInterval)
 	}
 }
