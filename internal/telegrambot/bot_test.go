@@ -288,7 +288,7 @@ func TestFormatSignalIncludesSidewaysMarketContext(t *testing.T) {
 		Symbol: "BTCUSDT", Timeframe: "30", Direction: "LONG",
 		ClosePrice: 65000, RSI: 32.5, EMARSI: 30.25,
 		MarketRegime: "SIDEWAYS",
-		MarketADX: 18.12, MarketADXReady: true,
+		MarketADX:    18.12, MarketADXReady: true,
 		MarketCHOP: 64.21, MarketCHOPReady: true,
 		MarketEMA: 64950.75, MarketEMAReady: true,
 	})
@@ -310,7 +310,7 @@ func TestFormatSignalShowsOnlyReadyMarketMetrics(t *testing.T) {
 	message := formatSignal(storage.Signal{
 		Symbol: "ETHUSDT", Timeframe: "30", Direction: "SHORT",
 		MarketRegime: "TRANSITIONAL",
-		MarketADX: 21.5, MarketADXReady: true,
+		MarketADX:    21.5, MarketADXReady: true,
 	})
 
 	for _, expected := range []string{
@@ -351,7 +351,7 @@ func TestFormatDeliveryPreservesSidewaysMarketContext(t *testing.T) {
 	message := formatDelivery(storage.Delivery{
 		Symbol: "BTCUSDT", Timeframe: "30", Direction: "SHORT",
 		MarketRegime: "SIDEWAYS",
-		MarketADX: 16.75, MarketADXReady: true,
+		MarketADX:    16.75, MarketADXReady: true,
 		MarketCHOP: 70.1, MarketCHOPReady: true,
 		MarketEMA: 65100, MarketEMAReady: true,
 	})
