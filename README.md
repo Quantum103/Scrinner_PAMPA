@@ -146,7 +146,7 @@ $env:DATABASE_BENCH_URL = 'postgres://rsi_test:rsi_test@localhost:5432/rsi_scann
 go test ./internal/storage -run '^$' -bench 'Benchmark(ListScannerWorkloads|CommitScannerProfileCandleWithoutSignal)$' -benchmem -benchtime=1x
 ```
 
-Benchmark выводит время на операцию и allocations. Сравнивать результаты следует на одной машине, с одинаковой версией Go и конфигурацией PostgreSQL. Эти benchmarks не подключаются к Bybit и не создают Telegram-уведомления.
+GitHub Actions автоматически выполняет эти benchmarks с `-benchtime=1x` и сохраняет показатели в логах workflow. Локальный запуск позволяет повторить замеры несколько раз. Benchmark выводит время на операцию и allocations. Сравнивать результаты следует на одной машине, с одинаковой версией Go и конфигурацией PostgreSQL. Эти benchmarks не подключаются к Bybit и не создают Telegram-уведомления.
 
 ## Остановка
 

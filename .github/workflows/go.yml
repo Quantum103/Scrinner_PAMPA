@@ -47,3 +47,19 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build ./...
+      - name: Indicator benchmarks
+        run: go test ./internal/indicators -run '^ -bench '^BenchmarkCalculate -benchmem -benchtime=1x
+      - name: Scanner load benchmarks
+        run: go test ./internal/scanner -run '^ -bench 'Benchmark(PersonalizedScan|ProfileRoutingCache) -benchmem -benchtime=1x
+      - name: Create isolated benchmark database
+        run: |
+          postgres_container="$(docker ps --filter "ancestor=postgres:18-alpine" --format "{{.ID}}" | head -n 1)"
+          if [ -z "$postgres_container" ]; then
+            echo "PostgreSQL service container was not found" >&2
+            exit 1
+          fi
+          docker exec "$postgres_container" createdb -U rsi_test rsi_scanner_bench
+      - name: PostgreSQL load benchmarks
+        env:
+          DATABASE_BENCH_URL: postgres://rsi_test:rsi_test@localhost:5432/rsi_scanner_bench?sslmode=disable
+        run: go test ./internal/storage -run '^ -bench 'Benchmark(ListScannerWorkloads|CommitScannerProfileCandleWithoutSignal) -benchmem -benchtime=1x
