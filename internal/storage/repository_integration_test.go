@@ -415,10 +415,10 @@ func TestEnqueueSignalForEligibleUsersAppliesUserFilters(t *testing.T) {
 	start := time.Now().UTC().Truncate(time.Minute).Add(-time.Minute)
 	signalID, inserted, err := repository.SaveSignal(ctx, Signal{
 		Symbol:      symbol,
-		Timeframe:   "5",
+		Timeframe:   "30",
 		Direction:   "LONG",
 		CandleStart: start,
-		CandleClose: start.Add(5 * time.Minute),
+		CandleClose: start.Add(30 * time.Minute),
 		ClosePrice:  3,
 		RSI:         55,
 		EMARSI:      52,
@@ -448,16 +448,16 @@ func TestCommitScannedCandleAtomicallyQueuesEligibleDelivery(t *testing.T) {
 	ctx := context.Background()
 	user := createTestUser(t, repository)
 	symbol := createTestInstrument(t, repository)
-	start := time.Now().UTC().Truncate(5 * time.Minute).Add(-10 * time.Minute)
-	closeAt := start.Add(5 * time.Minute)
+	start := time.Now().UTC().Truncate(30 * time.Minute).Add(-10 * time.Minute)
+	closeAt := start.Add(30 * time.Minute)
 
 	state := ScannerState{
-		Symbol: symbol, Timeframe: "5", LastProcessedCandleStart: start,
+		Symbol: symbol, Timeframe: "30", LastProcessedCandleStart: start,
 		LastClose: 101, LastRSI: 55, LastEMARSI: 52,
 		LastCrossDirection: "LONG", LastCrossAt: &closeAt, Initialized: true,
 	}
 	signal := &Signal{
-		Symbol: symbol, Timeframe: "5", Direction: "LONG",
+		Symbol: symbol, Timeframe: "30", Direction: "LONG",
 		CandleStart: start, CandleClose: closeAt, ClosePrice: 101,
 		RSI: 55, EMARSI: 52,
 	}
@@ -497,7 +497,7 @@ func TestScannerProfilesHaveIndependentCursorsAndDeliveries(t *testing.T) {
 	}
 
 	symbol := createTestInstrument(t, repository)
-	profiles, err := repository.ListScannerProfilesForPair(ctx, symbol, "5")
+	profiles, err := repository.ListScannerProfilesForPair(ctx, symbol, "30")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestScannerProfilesHaveIndependentCursorsAndDeliveries(t *testing.T) {
 	}
 	foundDefault, foundCustom := false, false
 	for _, workload := range workloads {
-		if workload.Timeframe != "5" || len(workload.Symbols) != 1 || workload.Symbols[0] != symbol {
+		if workload.Timeframe != "30" || len(workload.Symbols) != 1 || workload.Symbols[0] != symbol {
 			continue
 		}
 		foundDefault = foundDefault || (workload.RSILength == 14 && workload.EMALength == 9)
@@ -520,18 +520,18 @@ func TestScannerProfilesHaveIndependentCursorsAndDeliveries(t *testing.T) {
 		t.Fatalf("workloads omit one of the user's profiles: %+v", workloads)
 	}
 
-	start := time.Now().UTC().Truncate(5 * time.Minute).Add(-10 * time.Minute)
-	closeAt := start.Add(5 * time.Minute)
+	start := time.Now().UTC().Truncate(30 * time.Minute).Add(-10 * time.Minute)
+	closeAt := start.Add(30 * time.Minute)
 	makeState := func(rsiLength, emaLength int) ScannerProfileState {
 		return ScannerProfileState{
-			Symbol: symbol, Timeframe: "5", RSILength: rsiLength, EMALength: emaLength,
+			Symbol: symbol, Timeframe: "30", RSILength: rsiLength, EMALength: emaLength,
 			LastProcessedCandleStart: start, LastClose: 101, LastRSI: 55, LastEMARSI: 52,
 			LastCrossDirection: "LONG", LastCrossAt: &closeAt, Initialized: true,
 		}
 	}
 	makeSignal := func(rsiLength, emaLength int) *Signal {
 		return &Signal{
-			Symbol: symbol, Timeframe: "5", Direction: "LONG",
+			Symbol: symbol, Timeframe: "30", Direction: "LONG",
 			CandleStart: start, CandleClose: closeAt, ClosePrice: 101,
 			RSI: 55, EMARSI: 52, RSILength: rsiLength, EMALength: emaLength,
 		}
@@ -544,10 +544,10 @@ func TestScannerProfilesHaveIndependentCursorsAndDeliveries(t *testing.T) {
 	if err != nil || !inserted || queued != 1 || customID == defaultID {
 		t.Fatalf("custom profile commit: id=%d inserted=%t queued=%d err=%v", customID, inserted, queued, err)
 	}
-	if _, err := repository.GetScannerProfileState(ctx, symbol, "5", 14, 9); err != nil {
+	if _, err := repository.GetScannerProfileState(ctx, symbol, "30", 14, 9); err != nil {
 		t.Fatalf("load default profile cursor: %v", err)
 	}
-	if _, err := repository.GetScannerProfileState(ctx, symbol, "5", 10, 5); err != nil {
+	if _, err := repository.GetScannerProfileState(ctx, symbol, "30", 10, 5); err != nil {
 		t.Fatalf("load custom profile cursor: %v", err)
 	}
 
