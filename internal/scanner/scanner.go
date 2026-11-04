@@ -35,14 +35,14 @@ type ProfileRepository interface {
 }
 
 type Settings struct {
-	Timeframes             []string
-	RSILength              int
-	EMALength              int
-	InstrumentLimit        int
-	HistoryCandles         int
-	MarketADXSidewaysMax   float64
-	MarketCHOPSidewaysMin  float64
-	MarketADXTrendMin      float64
+	Timeframes            []string
+	RSILength             int
+	EMALength             int
+	InstrumentLimit       int
+	HistoryCandles        int
+	MarketADXSidewaysMax  float64
+	MarketCHOPSidewaysMin float64
+	MarketADXTrendMin     float64
 }
 
 type Report struct {

@@ -79,8 +79,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return nil, fmt.Errorf("initialize Bybit market synchronizer: %w", err)
 	}
 	signalScanner, err := scanner.New(restClient, repository, scanner.Settings{
-		Timeframes: cfg.Scanner.Timeframes, RSILength: cfg.Scanner.RSILength,
-		EMALength: cfg.Scanner.EMALength, InstrumentLimit: cfg.Scanner.InstrumentLimit,
+		Timeframes:            cfg.Scanner.Timeframes,
+		RSILength:             cfg.Scanner.RSILength,
+		EMALength:             cfg.Scanner.EMALength,
+		InstrumentLimit:       cfg.Scanner.InstrumentLimit,
 		HistoryCandles:        cfg.Scanner.HistoryCandles,
 		MarketADXSidewaysMax:  cfg.Scanner.MarketADXSidewaysMax,
 		MarketCHOPSidewaysMin: cfg.Scanner.MarketCHOPSidewaysMin,
