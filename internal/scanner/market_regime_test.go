@@ -223,7 +223,6 @@ func TestPersonalizedScannerAttachesSharedMarketContextToRSISignal(t *testing.T)
 	assertSignalHasUptrendContext(t, repository.signals[0])
 }
 
-
 func makeSidewaysCrossoverCandles(length int, start time.Time) []bybit.Candle {
 	closes := make([]float64, length)
 	for index := range closes {
@@ -233,7 +232,7 @@ func makeSidewaysCrossoverCandles(length int, start time.Time) []bybit.Candle {
 		}
 	}
 
-	candles := makeCandles("BTCUSDT", "5", closes, start, start.Add(time.Duration(length)*5*time.Minute))
+	candles := makeCandles("BTCUSDT", "5", closes, start, start.Add(time.Duration(length) * 5 * time.Minute))
 	for index := range candles {
 		candles[index].High = closes[index] + 0.5
 		candles[index].Low = closes[index] - 0.5

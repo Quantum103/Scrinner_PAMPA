@@ -148,7 +148,6 @@ func applyMarketContext(signal *storage.Signal, points []indicators.MarketPoint,
 	signal.MarketEMAReady = snapshot.emaReady
 }
 
-
 // marketRegimeAllowsSignal suppresses only confirmed sideways conditions.
 // Unknown and transitional markets remain eligible because they are not
 // confirmed to be ranging.
