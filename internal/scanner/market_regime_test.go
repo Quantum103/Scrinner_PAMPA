@@ -2,7 +2,6 @@ package scanner
 
 import (
 	"context"
-	"math"
 	"testing"
 	"time"
 
