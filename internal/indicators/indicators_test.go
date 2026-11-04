@@ -155,7 +155,7 @@ func TestCalculateRejectsInvalidPeriods(t *testing.T) {
 
 func TestCalculateRejectsInvalidClosePrices(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		value float64
 	}{
 		{name: "zero", value: 0},
