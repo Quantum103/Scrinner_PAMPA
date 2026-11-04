@@ -470,3 +470,118 @@ func TestPersonalizedScannerSharesMarketFetchButKeepsProfileCursors(t *testing.T
 		t.Fatalf("initial personalized scan must establish baselines, not replay history: %+v", repository.signals)
 	}
 }
+
+func TestPersonalizedScannerOnlyEmitsCrossForMatchingProfile(t *testing.T) {
+	closes := []float64{
+		100, 102, 100, 97, 99, 98, 101, 99, 101, 105,
+		103, 105, 108, 104, 108, 112, 110, 108, 104, 105,
+	}
+	start := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	prefix := closes[:len(closes)-1]
+	serverTime := start.Add(time.Duration(len(prefix)) * 5 * time.Minute)
+	source := &fakeSource{
+		serverTime: serverTime,
+		candles: map[string][]bybit.Candle{
+			pairKey("BTCUSDT", "5"): makeCandles("BTCUSDT", "5", prefix, start, serverTime),
+		},
+	}
+	repository := newProfileFakeRepository([]storage.ScannerWorkload{
+		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+		{RSILength: 8, EMALength: 3, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	})
+	service, err := New(source, repository, Settings{
+		Timeframes: []string{"5"}, RSILength: 3, EMALength: 2,
+		InstrumentLimit: 10, HistoryCandles: 20,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	service.now = func() time.Time { return serverTime }
+
+	baseline, err := service.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("initial personalized scan: %v", err)
+	}
+	if baseline.SignalsInserted != 0 || len(repository.signals) != 0 {
+		t.Fatalf("initial scan must only establish profile baselines: report=%+v signals=%+v", baseline, repository.signals)
+	}
+
+	serverTime = start.Add(time.Duration(len(closes)) * 5 * time.Minute)
+	source.serverTime = serverTime
+	source.candles[pairKey("BTCUSDT", "5")] = makeCandles("BTCUSDT", "5", closes, start, serverTime)
+
+	report, err := service.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("personalized crossover scan: %v", err)
+	}
+	if report.SignalsInserted != 1 || report.DeliveriesQueued != 1 || len(repository.signals) != 1 {
+		t.Fatalf("expected exactly one profile-specific signal: report=%+v signals=%+v", report, repository.signals)
+	}
+
+	signal := repository.signals[0]
+	if signal.Direction != "LONG" || signal.RSILength != 3 || signal.EMALength != 2 ||
+		!signal.CandleStart.Equal(start.Add(time.Duration(len(closes)-1)*5*time.Minute)) {
+		t.Fatalf("signal belongs to the wrong profile or candle: %+v", signal)
+	}
+	otherProfile := repository.states[profileStateKey("BTCUSDT", "5", 8, 3)]
+	if !otherProfile.LastProcessedCandleStart.Equal(signal.CandleStart) {
+		t.Fatalf("non-crossing profile cursor did not advance independently: %+v", otherProfile)
+	}
+}
+
+func TestPersonalizedWebSocketCandleIsProfileAwareAndDeduplicated(t *testing.T) {
+	closes := []float64{
+		100, 102, 100, 97, 99, 98, 101, 99, 101, 105,
+		103, 105, 108, 104, 108, 112, 110, 108, 104, 105,
+	}
+	start := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	prefix := closes[:len(closes)-1]
+	serverTime := start.Add(time.Duration(len(prefix)) * 5 * time.Minute)
+	source := &fakeSource{
+		serverTime: serverTime,
+		candles: map[string][]bybit.Candle{
+			pairKey("BTCUSDT", "5"): makeCandles("BTCUSDT", "5", prefix, start, serverTime),
+		},
+	}
+	repository := newProfileFakeRepository([]storage.ScannerWorkload{
+		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	})
+	service, err := New(source, repository, Settings{
+		Timeframes: []string{"5"}, RSILength: 3, EMALength: 2,
+		InstrumentLimit: 10, HistoryCandles: 20,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("initial personalized baseline: %v", err)
+	}
+	serverTime = start.Add(time.Duration(len(closes)) * 5 * time.Minute)
+	source.serverTime = serverTime
+	source.candles[pairKey("BTCUSDT", "5")] = makeCandles("BTCUSDT", "5", closes, start, serverTime)
+	lastCandle := source.candles[pairKey("BTCUSDT", "5")][len(closes)-1]
+
+	report, err := service.ProcessClosedCandle(context.Background(), lastCandle)
+	if err != nil {
+		t.Fatalf("personalized WebSocket candle: %v", err)
+	}
+	if report.SignalsInserted != 1 || len(repository.signals) != 1 {
+		t.Fatalf("expected one personalized WebSocket signal: report=%+v signals=%+v", report, repository.signals)
+	}
+	if repository.signals[0].RSILength != 3 || repository.signals[0].EMALength != 2 ||
+		repository.signals[0].Direction != "LONG" {
+		t.Fatalf("unexpected personalized WebSocket signal: %+v", repository.signals[0])
+	}
+
+	replay, err := service.ProcessClosedCandle(context.Background(), lastCandle)
+	if err != nil {
+		t.Fatalf("replayed personalized WebSocket candle: %v", err)
+	}
+	if replay.SignalsInserted != 0 || len(repository.signals) != 1 {
+		t.Fatalf("replayed personalized WebSocket candle duplicated signal: report=%+v signals=%+v", replay, repository.signals)
+	}
+	if source.calls != 2 {
+		t.Fatalf("expected one initial REST fetch and one WebSocket gap backfill, calls=%d", source.calls)
+	}
+}
