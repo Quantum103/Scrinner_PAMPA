@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/indicators"
@@ -145,4 +146,12 @@ func applyMarketContext(signal *storage.Signal, points []indicators.MarketPoint,
 	signal.MarketCHOPReady = snapshot.chopReady
 	signal.MarketEMA = snapshot.ema
 	signal.MarketEMAReady = snapshot.emaReady
+}
+
+
+// marketRegimeAllowsSignal suppresses only confirmed sideways conditions.
+// Unknown and transitional markets remain eligible because they are not
+// confirmed to be ranging.
+func marketRegimeAllowsSignal(regime string) bool {
+	return !strings.EqualFold(strings.TrimSpace(regime), marketRegimeSideways)
 }

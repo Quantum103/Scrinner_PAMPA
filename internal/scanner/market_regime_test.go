@@ -222,3 +222,131 @@ func TestPersonalizedScannerAttachesSharedMarketContextToRSISignal(t *testing.T)
 	}
 	assertSignalHasUptrendContext(t, repository.signals[0])
 }
+
+
+func makeSidewaysCrossoverCandles(length int, start time.Time) []bybit.Candle {
+	closes := make([]float64, length)
+	for index := range closes {
+		closes[index] = 100.2
+		if index%2 == 1 {
+			closes[index] = 99.8
+		}
+	}
+
+	candles := makeCandles("BTCUSDT", "5", closes, start, start.Add(time.Duration(length)*5*time.Minute))
+	for index := range candles {
+		candles[index].High = closes[index] + 0.5
+		candles[index].Low = closes[index] - 0.5
+	}
+	return candles
+}
+
+func TestMarketRegimeAllowsSignalsOnlyWhenNotConfirmedSideways(t *testing.T) {
+	tests := []struct {
+		regime string
+		want   bool
+	}{
+		{regime: marketRegimeSideways, want: false},
+		{regime: "sideways", want: false},
+		{regime: marketRegimeUptrend, want: true},
+		{regime: marketRegimeDowntrend, want: true},
+		{regime: marketRegimeTransitional, want: true},
+		{regime: marketRegimeUnknown, want: true},
+		{regime: "", want: true},
+	}
+	for _, test := range tests {
+		if got := marketRegimeAllowsSignal(test.regime); got != test.want {
+			t.Errorf("marketRegimeAllowsSignal(%q) = %t, want %t", test.regime, got, test.want)
+		}
+	}
+}
+
+func TestLegacyScannerFiltersSidewaysCrossAndAdvancesCursor(t *testing.T) {
+	start := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	prefix := makeSidewaysCrossoverCandles(52, start)
+	serverTime := start.Add(52 * 5 * time.Minute)
+	service, source, repository, _ := newScannerForTest(t, make([]float64, 52))
+	source.serverTime = serverTime
+	source.candles[pairKey("BTCUSDT", "5")] = prefix
+
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("baseline scan: %v", err)
+	}
+
+	full := makeSidewaysCrossoverCandles(53, start)
+	serverTime = start.Add(53 * 5 * time.Minute)
+	source.serverTime = serverTime
+	source.candles[pairKey("BTCUSDT", "5")] = full
+	service.now = func() time.Time { return serverTime }
+
+	report, err := service.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("sideways crossover scan: %v", err)
+	}
+	if report.SignalsInserted != 0 || report.DeliveriesQueued != 0 || len(repository.signals) != 0 {
+		t.Fatalf("sideways RSI cross was emitted: report=%+v signals=%+v", report, repository.signals)
+	}
+	if report.CandlesProcessed != 1 {
+		t.Fatalf("processed candles = %d, want 1", report.CandlesProcessed)
+	}
+	state := repository.states[pairKey("BTCUSDT", "5")]
+	if !state.LastProcessedCandleStart.Equal(full[len(full)-1].Start) {
+		t.Fatalf("cursor did not advance past filtered sideways candle: %+v", state)
+	}
+	if state.LastCrossDirection != "LONG" || state.LastCrossAt == nil {
+		t.Fatalf("filtered crossover was not recorded in scanner cursor: %+v", state)
+	}
+
+	replay, err := service.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("replay filtered candle: %v", err)
+	}
+	if replay.CandlesProcessed != 0 || replay.SignalsInserted != 0 || len(repository.signals) != 0 {
+		t.Fatalf("filtered candle was reprocessed: report=%+v signals=%+v", replay, repository.signals)
+	}
+}
+
+func TestPersonalizedScannerFiltersSidewaysCrossAndAdvancesCursor(t *testing.T) {
+	start := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	prefix := makeSidewaysCrossoverCandles(52, start)
+	serverTime := start.Add(52 * 5 * time.Minute)
+	source := &fakeSource{
+		serverTime: serverTime,
+		candles: map[string][]bybit.Candle{pairKey("BTCUSDT", "5"): prefix},
+	}
+	repository := newProfileFakeRepository([]storage.ScannerWorkload{
+		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	})
+	service, err := New(source, repository, Settings{
+		Timeframes: []string{"5"}, RSILength: 3, EMALength: 2,
+		InstrumentLimit: 10, HistoryCandles: 20,
+	})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	service.now = func() time.Time { return serverTime }
+
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("baseline personalized scan: %v", err)
+	}
+
+	full := makeSidewaysCrossoverCandles(53, start)
+	serverTime = start.Add(53 * 5 * time.Minute)
+	source.serverTime = serverTime
+	source.candles[pairKey("BTCUSDT", "5")] = full
+
+	report, err := service.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("personalized sideways crossover scan: %v", err)
+	}
+	if report.SignalsInserted != 0 || report.DeliveriesQueued != 0 || len(repository.signals) != 0 {
+		t.Fatalf("personalized sideways RSI cross was emitted: report=%+v signals=%+v", report, repository.signals)
+	}
+	state := repository.states[profileStateKey("BTCUSDT", "5", 3, 2)]
+	if !state.LastProcessedCandleStart.Equal(full[len(full)-1].Start) {
+		t.Fatalf("personalized cursor did not advance past filtered sideways candle: %+v", state)
+	}
+	if state.LastCrossDirection != "LONG" || state.LastCrossAt == nil {
+		t.Fatalf("personalized filtered crossover was not recorded in cursor: %+v", state)
+	}
+}

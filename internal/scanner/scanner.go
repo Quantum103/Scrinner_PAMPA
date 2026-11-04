@@ -630,6 +630,9 @@ func (s *Scanner) processProfilePairCandlesLocked(
 				DetectedAt: s.now().UTC(),
 			}
 			applyMarketContext(signal, marketPoints, index)
+			if !marketRegimeAllowsSignal(signal.MarketRegime) {
+				signal = nil
+			}
 		}
 		signalID, inserted, queued, err := s.profileRepository.CommitScannerProfileCandle(ctx, next, signal)
 		if errors.Is(err, storage.ErrStaleCandle) {
@@ -774,6 +777,9 @@ func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timefram
 				DetectedAt:  s.now().UTC(),
 			}
 			applyMarketContext(signal, marketPoints, index)
+			if !marketRegimeAllowsSignal(signal.MarketRegime) {
+				signal = nil
+			}
 		}
 
 		signalID, inserted, queued, err := s.repository.CommitScannedCandle(ctx, next, signal)
