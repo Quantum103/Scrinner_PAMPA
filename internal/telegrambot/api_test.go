@@ -80,7 +80,7 @@ func TestTelegramAPIDeleteMessage(t *testing.T) {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		var request struct {
-			ChatID int64 `json:"chat_id"`
+			ChatID    int64 `json:"chat_id"`
 			MessageID int64 `json:"message_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
