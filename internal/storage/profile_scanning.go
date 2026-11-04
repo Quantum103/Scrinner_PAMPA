@@ -52,7 +52,8 @@ func (r *Repository) ListScannerWorkloads(ctx context.Context) ([]ScannerWorkloa
 			FROM instruments
 			WHERE is_active = TRUE
 		)
-		SELECT DISTINCT settings.rsi_length, settings.ema_length, tf.timeframe, instrument.symbol
+		SELECT settings.rsi_length, settings.ema_length, tf.timeframe,
+		       array_agg(DISTINCT instrument.symbol ORDER BY instrument.symbol) AS symbols
 		FROM telegram_users user_account
 		JOIN user_settings settings ON settings.user_id = user_account.id
 		JOIN user_timeframes tf ON tf.user_id = user_account.id
@@ -74,39 +75,22 @@ func (r *Repository) ListScannerWorkloads(ctx context.Context) ([]ScannerWorkloa
 			WHERE excluded.user_id = user_account.id
 			  AND excluded.symbol = instrument.symbol
 			  AND excluded.preference = 'exclude'
-		  )
-		ORDER BY settings.rsi_length, settings.ema_length, tf.timeframe, instrument.symbol
+			)
+		GROUP BY settings.rsi_length, settings.ema_length, tf.timeframe
+		ORDER BY settings.rsi_length, settings.ema_length, tf.timeframe
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("list personalized scanner workloads: %w", err)
 	}
 	defer rows.Close()
 
-	type workloadKey struct {
-		rsiLength int
-		emaLength int
-		timeframe string
-	}
-	indexes := make(map[workloadKey]int)
 	workloads := make([]ScannerWorkload, 0)
 	for rows.Next() {
-		var rsiLength, emaLength int
-		var timeframe, symbol string
-		if err := rows.Scan(&rsiLength, &emaLength, &timeframe, &symbol); err != nil {
+		var workload ScannerWorkload
+		if err := rows.Scan(&workload.RSILength, &workload.EMALength, &workload.Timeframe, &workload.Symbols); err != nil {
 			return nil, fmt.Errorf("scan personalized scanner workload: %w", err)
 		}
-		key := workloadKey{rsiLength: rsiLength, emaLength: emaLength, timeframe: timeframe}
-		position, exists := indexes[key]
-		if !exists {
-			position = len(workloads)
-			indexes[key] = position
-			workloads = append(workloads, ScannerWorkload{
-				RSILength: rsiLength,
-				EMALength: emaLength,
-				Timeframe: timeframe,
-			})
-		}
-		workloads[position].Symbols = append(workloads[position].Symbols, symbol)
+		workloads = append(workloads, workload)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate personalized scanner workloads: %w", err)

@@ -668,3 +668,30 @@ func TestPersonalizedWebSocketFailsClosedBeforeProfileCacheInitialization(t *tes
 			repository.fakeRepository.states, repository.signals)
 	}
 }
+
+func TestPersonalizedProfileRoutingCacheSortsAndDeduplicates(t *testing.T) {
+	service := &Scanner{profilePairs: make(map[string][]storage.ScannerProfile)}
+	workloads := []storage.ScannerWorkload{
+		{RSILength: 8, EMALength: 3, Timeframe: "5", Symbols: []string{"BTCUSDT", "ETHUSDT"}},
+		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT", "ETHUSDT"}},
+		{RSILength: 8, EMALength: 3, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	}
+	if err := service.refreshProfileCacheLocked(workloads, true); err != nil {
+		t.Fatalf("refresh profile routing cache: %v", err)
+	}
+	want := []storage.ScannerProfile{
+		{RSILength: 3, EMALength: 2},
+		{RSILength: 8, EMALength: 3},
+	}
+	for _, symbol := range []string{"BTCUSDT", "ETHUSDT"} {
+		got := service.profilePairs[historyKey(symbol, "5")]
+		if len(got) != len(want) {
+			t.Fatalf("%s profiles = %+v, want %+v", symbol, got, want)
+		}
+		for index := range want {
+			if got[index] != want[index] {
+				t.Fatalf("%s profiles = %+v, want %+v", symbol, got, want)
+			}
+		}
+	}
+}

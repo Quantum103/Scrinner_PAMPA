@@ -154,7 +154,7 @@ func (s *Scanner) ScanOnce(ctx context.Context) (Report, error) {
 // WebSocket hot path. It is called under s.mu before the corresponding REST
 // reconciliation so new profiles have their baseline before live events run.
 func (s *Scanner) refreshProfileCacheLocked(workloads []storage.ScannerWorkload, hasUsers bool) error {
-	profileSets := make(map[string]map[storage.ScannerProfile]struct{})
+	profilesByPair := make(map[string][]storage.ScannerProfile)
 	for _, workload := range workloads {
 		if _, err := timeframeDuration(workload.Timeframe); err != nil {
 			return err
@@ -171,26 +171,27 @@ func (s *Scanner) refreshProfileCacheLocked(workloads []storage.ScannerWorkload,
 				return errors.New("personalized scanner workload contains an empty symbol")
 			}
 			key := historyKey(symbol, workload.Timeframe)
-			if profileSets[key] == nil {
-				profileSets[key] = make(map[storage.ScannerProfile]struct{})
-			}
-			profileSets[key][profile] = struct{}{}
+			profilesByPair[key] = append(profilesByPair[key], profile)
 		}
 	}
 
-	profilesByPair := make(map[string][]storage.ScannerProfile, len(profileSets))
-	for key, profileSet := range profileSets {
-		profiles := make([]storage.ScannerProfile, 0, len(profileSet))
-		for profile := range profileSet {
-			profiles = append(profiles, profile)
-		}
+	// Workloads normally arrive sorted and unique from PostgreSQL. Sorting and
+	// in-place deduplication preserve correctness for other callers while
+	// avoiding one nested map allocation per symbol/timeframe pair.
+	for key, profiles := range profilesByPair {
 		sort.Slice(profiles, func(i, j int) bool {
 			if profiles[i].RSILength == profiles[j].RSILength {
 				return profiles[i].EMALength < profiles[j].EMALength
 			}
 			return profiles[i].RSILength < profiles[j].RSILength
 		})
-		profilesByPair[key] = profiles
+		unique := profiles[:0]
+		for _, profile := range profiles {
+			if len(unique) == 0 || unique[len(unique)-1] != profile {
+				unique = append(unique, profile)
+			}
+		}
+		profilesByPair[key] = unique
 	}
 	s.profilePairs = profilesByPair
 	s.hasActiveProfileUsers = hasUsers || len(workloads) > 0
