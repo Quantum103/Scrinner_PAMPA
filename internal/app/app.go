@@ -228,6 +228,7 @@ func (a *App) runScanner(ctx context.Context) {
 				"pairs_scanned", report.PairsScanned,
 				"candles_processed", report.CandlesProcessed,
 				"signals_inserted", report.SignalsInserted,
+				"sideways_signals_filtered", report.SidewaysSignalsFiltered,
 			)
 			return
 		}
@@ -236,6 +237,7 @@ func (a *App) runScanner(ctx context.Context) {
 			"pairs_scanned", report.PairsScanned,
 			"candles_processed", report.CandlesProcessed,
 			"signals_inserted", report.SignalsInserted,
+			"sideways_signals_filtered", report.SidewaysSignalsFiltered,
 			"deliveries_queued", report.DeliveriesQueued,
 		)
 	}
@@ -298,7 +300,9 @@ start:
 				if scanErr != nil {
 					a.logger.Error("REST backfill after Bybit WebSocket connection completed with partial errors",
 						"error", scanErr, "pairs_scanned", report.PairsScanned,
-						"candles_processed", report.CandlesProcessed, "signals_inserted", report.SignalsInserted)
+						"candles_processed", report.CandlesProcessed,
+						"signals_inserted", report.SignalsInserted,
+						"sideways_signals_filtered", report.SidewaysSignalsFiltered)
 					if report.PairsScanned == 0 {
 						return scanErr
 					}
@@ -306,7 +310,8 @@ start:
 				a.logger.Info("REST backfill after Bybit WebSocket connection completed",
 					"pairs_scanned", report.PairsScanned,
 					"candles_processed", report.CandlesProcessed,
-					"signals_inserted", report.SignalsInserted)
+					"signals_inserted", report.SignalsInserted,
+					"sideways_signals_filtered", report.SidewaysSignalsFiltered)
 				return nil
 			},
 			OnCandle: func(candleCtx context.Context, candle bybit.Candle) error {
@@ -317,10 +322,11 @@ start:
 						"candle_start", candle.Start, "error", processErr)
 					return processErr
 				}
-				if report.SignalsInserted > 0 {
-					a.logger.Info("RSI signal detected from Bybit WebSocket candle",
+				if report.SignalsInserted > 0 || report.SidewaysSignalsFiltered > 0 {
+					a.logger.Info("RSI crossover processed from Bybit WebSocket candle",
 						"symbol", candle.Symbol, "timeframe", candle.Timeframe,
 						"signals_inserted", report.SignalsInserted,
+						"sideways_signals_filtered", report.SidewaysSignalsFiltered,
 						"deliveries_queued", report.DeliveriesQueued)
 				}
 				return nil

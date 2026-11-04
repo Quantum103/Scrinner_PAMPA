@@ -46,11 +46,12 @@ type Settings struct {
 }
 
 type Report struct {
-	Instruments      int
-	PairsScanned     int
-	CandlesProcessed int
-	SignalsInserted  int
-	DeliveriesQueued int64
+	Instruments              int
+	PairsScanned             int
+	CandlesProcessed         int
+	SignalsInserted          int
+	SidewaysSignalsFiltered  int
+	DeliveriesQueued         int64
 }
 
 type Scanner struct {
@@ -285,6 +286,7 @@ func (s *Scanner) scanLegacyOnceLocked(ctx context.Context) (Report, error) {
 			report.PairsScanned++
 			report.CandlesProcessed += pairReport.CandlesProcessed
 			report.SignalsInserted += pairReport.SignalsInserted
+			report.SidewaysSignalsFiltered += pairReport.SidewaysSignalsFiltered
 			report.DeliveriesQueued += pairReport.DeliveriesQueued
 		}
 	}
@@ -396,6 +398,7 @@ func (s *Scanner) scanProfileWorkloadsLocked(ctx context.Context, workloads []st
 			}
 			report.CandlesProcessed += pairReport.CandlesProcessed
 			report.SignalsInserted += pairReport.SignalsInserted
+			report.SidewaysSignalsFiltered += pairReport.SidewaysSignalsFiltered
 			report.DeliveriesQueued += pairReport.DeliveriesQueued
 		}
 	}
@@ -487,6 +490,7 @@ func (s *Scanner) processLegacyClosedCandleLocked(ctx context.Context, candle by
 	report := Report{PairsScanned: 1}
 	report.CandlesProcessed = pairReport.CandlesProcessed
 	report.SignalsInserted = pairReport.SignalsInserted
+	report.SidewaysSignalsFiltered = pairReport.SidewaysSignalsFiltered
 	report.DeliveriesQueued = pairReport.DeliveriesQueued
 	return report, err
 }
@@ -655,6 +659,7 @@ func (s *Scanner) processProfilePairCandlesLocked(
 			}
 		}
 		var signal *storage.Signal
+		filteredSideways := false
 		if direction != "" {
 			crossAt := current.Close.UTC()
 			next.LastCrossDirection = direction
@@ -668,6 +673,7 @@ func (s *Scanner) processProfilePairCandlesLocked(
 			}
 			applyMarketContextWithThresholds(signal, marketPoints, index, s.marketRegimeThresholds())
 			if !marketRegimeAllowsSignal(signal.MarketRegime) {
+				filteredSideways = true
 				signal = nil
 			}
 		}
@@ -687,6 +693,9 @@ func (s *Scanner) processProfilePairCandlesLocked(
 		}
 		state = next
 		report.CandlesProcessed++
+		if filteredSideways {
+			report.SidewaysSignalsFiltered++
+		}
 		if inserted {
 			report.SignalsInserted++
 			report.DeliveriesQueued += queued
@@ -696,9 +705,10 @@ func (s *Scanner) processProfilePairCandlesLocked(
 }
 
 type pairReport struct {
-	CandlesProcessed int
-	SignalsInserted  int
-	DeliveriesQueued int64
+	CandlesProcessed        int
+	SignalsInserted         int
+	SidewaysSignalsFiltered int
+	DeliveriesQueued        int64
 }
 
 func (s *Scanner) scanPairLocked(ctx context.Context, symbol, timeframe string, serverTime time.Time) (pairReport, error) {
@@ -796,6 +806,7 @@ func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timefram
 		}
 
 		var signal *storage.Signal
+		filteredSideways := false
 		if direction != "" {
 			crossAt := candle.Close.UTC()
 			next.LastCrossDirection = direction
@@ -815,6 +826,7 @@ func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timefram
 			}
 			applyMarketContextWithThresholds(signal, marketPoints, index, s.marketRegimeThresholds())
 			if !marketRegimeAllowsSignal(signal.MarketRegime) {
+				filteredSideways = true
 				signal = nil
 			}
 		}
@@ -832,6 +844,9 @@ func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timefram
 		}
 		state = next
 		report.CandlesProcessed++
+		if filteredSideways {
+			report.SidewaysSignalsFiltered++
+		}
 		if inserted {
 			report.SignalsInserted++
 			report.DeliveriesQueued += queued

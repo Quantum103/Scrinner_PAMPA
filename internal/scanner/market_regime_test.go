@@ -301,8 +301,9 @@ func TestLegacyScannerFiltersSidewaysCrossAndAdvancesCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sideways crossover scan: %v", err)
 	}
-	if report.SignalsInserted != 0 || report.DeliveriesQueued != 0 || len(repository.signals) != 0 {
-		t.Fatalf("sideways RSI cross was emitted: report=%+v signals=%+v", report, repository.signals)
+	if report.SignalsInserted != 0 || report.SidewaysSignalsFiltered != 1 ||
+		report.DeliveriesQueued != 0 || len(repository.signals) != 0 {
+		t.Fatalf("sideways RSI cross was not reported as filtered: report=%+v signals=%+v", report, repository.signals)
 	}
 	if report.CandlesProcessed != 1 {
 		t.Fatalf("processed candles = %d, want 1", report.CandlesProcessed)
@@ -319,7 +320,8 @@ func TestLegacyScannerFiltersSidewaysCrossAndAdvancesCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay filtered candle: %v", err)
 	}
-	if replay.CandlesProcessed != 0 || replay.SignalsInserted != 0 || len(repository.signals) != 0 {
+	if replay.CandlesProcessed != 0 || replay.SignalsInserted != 0 ||
+		replay.SidewaysSignalsFiltered != 0 || len(repository.signals) != 0 {
 		t.Fatalf("filtered candle was reprocessed: report=%+v signals=%+v", replay, repository.signals)
 	}
 }
@@ -357,8 +359,9 @@ func TestPersonalizedScannerFiltersSidewaysCrossAndAdvancesCursor(t *testing.T) 
 	if err != nil {
 		t.Fatalf("personalized sideways crossover scan: %v", err)
 	}
-	if report.SignalsInserted != 0 || report.DeliveriesQueued != 0 || len(repository.signals) != 0 {
-		t.Fatalf("personalized sideways RSI cross was emitted: report=%+v signals=%+v", report, repository.signals)
+	if report.SignalsInserted != 0 || report.SidewaysSignalsFiltered != 1 ||
+		report.DeliveriesQueued != 0 || len(repository.signals) != 0 {
+		t.Fatalf("personalized sideways RSI cross was not reported as filtered: report=%+v signals=%+v", report, repository.signals)
 	}
 	state := repository.states[profileStateKey("BTCUSDT", "5", 3, 2)]
 	if !state.LastProcessedCandleStart.Equal(full[len(full)-1].Start) {
