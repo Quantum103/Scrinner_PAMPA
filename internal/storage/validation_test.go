@@ -54,9 +54,21 @@ func TestValidateSignal(t *testing.T) {
 		ClosePrice:  100,
 		RSI:         50,
 		EMARSI:      48,
+		MarketRegime: "SIDEWAYS",
+		MarketADX: 17.8, MarketADXReady: true,
+		MarketCHOP: 65.3, MarketCHOPReady: true,
+		MarketEMA: 99.5, MarketEMAReady: true,
 	}
 	if err := validateSignal(valid); err != nil {
 		t.Fatalf("valid signal rejected: %v", err)
+	}
+	legacy := valid
+	legacy.MarketRegime = ""
+	legacy.MarketADXReady = false
+	legacy.MarketCHOPReady = false
+	legacy.MarketEMAReady = false
+	if err := validateSignal(legacy); err != nil {
+		t.Fatalf("legacy signal without market context rejected: %v", err)
 	}
 	tests := []struct {
 		name string
@@ -68,6 +80,11 @@ func TestValidateSignal(t *testing.T) {
 		{name: "zero price", edit: func(s *Signal) { s.ClosePrice = 0 }},
 		{name: "NaN RSI", edit: func(s *Signal) { s.RSI = math.NaN() }},
 		{name: "out of range EMA", edit: func(s *Signal) { s.EMARSI = 100.1 }},
+		{name: "unknown market regime", edit: func(s *Signal) { s.MarketRegime = "RANGING" }},
+		{name: "market ADX above 100", edit: func(s *Signal) { s.MarketADX = 100.1 }},
+		{name: "negative market CHOP", edit: func(s *Signal) { s.MarketCHOP = -0.1 }},
+		{name: "zero market EMA", edit: func(s *Signal) { s.MarketEMA = 0 }},
+		{name: "NaN market indicator", edit: func(s *Signal) { s.MarketADX = math.NaN() }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

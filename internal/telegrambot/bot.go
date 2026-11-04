@@ -726,6 +726,10 @@ func formatDelivery(delivery storage.Delivery) string {
 		CandleStart: delivery.CandleStart, CandleClose: delivery.CandleClose,
 		ClosePrice: delivery.ClosePrice, RSI: delivery.RSI, EMARSI: delivery.EMARSI,
 		RSILength: delivery.RSILength, EMALength: delivery.EMALength,
+		MarketRegime: delivery.MarketRegime,
+		MarketADX: delivery.MarketADX, MarketADXReady: delivery.MarketADXReady,
+		MarketCHOP: delivery.MarketCHOP, MarketCHOPReady: delivery.MarketCHOPReady,
+		MarketEMA: delivery.MarketEMA, MarketEMAReady: delivery.MarketEMAReady,
 		DetectedAt: delivery.DetectedAt,
 	})
 }

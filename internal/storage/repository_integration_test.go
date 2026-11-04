@@ -206,6 +206,10 @@ func TestSignalDeduplicationDeliveryRetryAndUserHistory(t *testing.T) {
 		ClosePrice:  12.345,
 		RSI:         56.82,
 		EMARSI:      54.31,
+		MarketRegime: "SIDEWAYS",
+		MarketADX: 17.8, MarketADXReady: true,
+		MarketCHOP: 65.3, MarketCHOPReady: true,
+		MarketEMA: 12.25, MarketEMAReady: true,
 		DetectedAt:  time.Now().UTC(),
 	}
 
@@ -238,6 +242,7 @@ func TestSignalDeduplicationDeliveryRetryAndUserHistory(t *testing.T) {
 	if len(claimed) != 1 || claimed[0].TelegramID != user.TelegramID || claimed[0].AttemptCount != 1 {
 		t.Fatalf("unexpected claimed deliveries: %+v", claimed)
 	}
+	assertMarketContextDelivery(t, claimed[0])
 
 	if err := repository.MarkDeliveryFailed(ctx, user.ID, signalID, time.Now().Add(-time.Second), errors.New("temporary Telegram error")); err != nil {
 		t.Fatalf("mark delivery failed: %v", err)
@@ -249,6 +254,7 @@ func TestSignalDeduplicationDeliveryRetryAndUserHistory(t *testing.T) {
 	if len(retried) != 1 || retried[0].AttemptCount != 2 {
 		t.Fatalf("retry attempt was not incremented: %+v", retried)
 	}
+	assertMarketContextDelivery(t, retried[0])
 	if err := repository.MarkDeliverySent(ctx, user.ID, signalID); err != nil {
 		t.Fatalf("mark delivery sent: %v", err)
 	}
@@ -266,6 +272,12 @@ func TestSignalDeduplicationDeliveryRetryAndUserHistory(t *testing.T) {
 	}
 	if len(history) != 1 || history[0].ID != signalID {
 		t.Fatalf("unexpected user's signal history: %+v", history)
+	}
+	if history[0].MarketRegime != "SIDEWAYS" ||
+		!history[0].MarketADXReady || history[0].MarketADX != 17.8 ||
+		!history[0].MarketCHOPReady || history[0].MarketCHOP != 65.3 ||
+		!history[0].MarketEMAReady || history[0].MarketEMA != 12.25 {
+		t.Fatalf("market context was not persisted in signal history: %+v", history[0])
 	}
 	otherHistory, err := repository.ListUserSignals(ctx, otherUser.ID, SignalFilters{Limit: 20})
 	if err != nil {
@@ -302,6 +314,16 @@ func TestSignalDeduplicationDeliveryRetryAndUserHistory(t *testing.T) {
 	}
 	if _, err := repository.ClaimPendingDeliveriesForUsers(ctx, 10, time.Minute, nil); err == nil {
 		t.Fatal("empty Telegram delivery allowlist must be rejected")
+	}
+}
+
+func assertMarketContextDelivery(t *testing.T, delivery Delivery) {
+	t.Helper()
+	if delivery.MarketRegime != "SIDEWAYS" ||
+		!delivery.MarketADXReady || delivery.MarketADX != 17.8 ||
+		!delivery.MarketCHOPReady || delivery.MarketCHOP != 65.3 ||
+		!delivery.MarketEMAReady || delivery.MarketEMA != 12.25 {
+		t.Fatalf("market context was not copied into delivery: %+v", delivery)
 	}
 }
 

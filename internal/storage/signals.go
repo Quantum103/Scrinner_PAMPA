@@ -38,14 +38,22 @@ func insertSignal(ctx context.Context, tx pgx.Tx, signal Signal) (int64, bool, e
 		strings.ToUpper(signal.Symbol), signal.Timeframe, signal.Direction,
 		signal.CandleStart, signal.CandleClose, signal.ClosePrice, signal.RSI,
 		signal.EMARSI, rsiLength, emaLength, nullableDetectedAt(signal.DetectedAt),
+		normalizedMarketRegime(signal.MarketRegime),
+		nullableMarketValue(signal.MarketADX, signal.MarketADXReady),
+		nullableMarketValue(signal.MarketCHOP, signal.MarketCHOPReady),
+		nullableMarketValue(signal.MarketEMA, signal.MarketEMAReady),
 	}
 	var id int64
 	err := tx.QueryRow(ctx, `
 		INSERT INTO signals (
 			symbol, timeframe, direction, candle_start, candle_close,
-			close_price, rsi, ema_rsi, rsi_length, ema_length, detected_at
+			close_price, rsi, ema_rsi, rsi_length, ema_length, detected_at,
+			market_regime, market_adx, market_chop, market_ema
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()))
+		VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()),
+			$12, $13, $14, $15
+		)
 		ON CONFLICT (symbol, timeframe, candle_start, direction, rsi_length, ema_length) DO NOTHING
 		RETURNING id
 	`, arguments...).Scan(&id)
@@ -84,6 +92,21 @@ func nullableDetectedAt(value time.Time) any {
 	return value
 }
 
+func normalizedMarketRegime(value string) string {
+	regime := strings.ToUpper(strings.TrimSpace(value))
+	if regime == "" {
+		return "UNKNOWN"
+	}
+	return regime
+}
+
+func nullableMarketValue(value float64, ready bool) any {
+	if !ready {
+		return nil
+	}
+	return value
+}
+
 func validateSignal(signal Signal) error {
 	if strings.TrimSpace(signal.Symbol) == "" {
 		return fmt.Errorf("%w: signal symbol is required", ErrInvalidInput)
@@ -105,6 +128,30 @@ func validateSignal(signal Signal) error {
 	}
 	if signal.EMARSI < 0 || signal.EMARSI > 100 || math.IsNaN(signal.EMARSI) || math.IsInf(signal.EMARSI, 0) {
 		return fmt.Errorf("%w: signal EMA RSI must be between 0 and 100", ErrInvalidInput)
+	}
+	switch normalizedMarketRegime(signal.MarketRegime) {
+	case "UNKNOWN", "SIDEWAYS", "UPTREND", "DOWNTREND", "TRANSITIONAL":
+	default:
+		return fmt.Errorf("%w: unsupported market regime %q", ErrInvalidInput, signal.MarketRegime)
+	}
+	marketValues := map[string]float64{
+		"market ADX":  signal.MarketADX,
+		"market CHOP": signal.MarketCHOP,
+		"market EMA":  signal.MarketEMA,
+	}
+	for name, value := range marketValues {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("%w: signal %s must be finite", ErrInvalidInput, name)
+		}
+	}
+	if signal.MarketADXReady && (signal.MarketADX < 0 || signal.MarketADX > 100) {
+		return fmt.Errorf("%w: signal market ADX must be between 0 and 100", ErrInvalidInput)
+	}
+	if signal.MarketCHOPReady && (signal.MarketCHOP < 0 || signal.MarketCHOP > 100) {
+		return fmt.Errorf("%w: signal market CHOP must be between 0 and 100", ErrInvalidInput)
+	}
+	if signal.MarketEMAReady && signal.MarketEMA <= 0 {
+		return fmt.Errorf("%w: signal market EMA must be positive", ErrInvalidInput)
 	}
 	rsiLength, emaLength := signalPeriods(signal)
 	if rsiLength < 2 || rsiLength > 500 || emaLength < 1 || emaLength > 500 || rsiLength+emaLength > 1000 {
@@ -452,7 +499,11 @@ func (r *Repository) claimPendingDeliveries(ctx context.Context, limit int, leas
 		  AND u.is_active = TRUE
 		RETURNING d.user_id, u.telegram_id, d.signal_id, d.status, d.attempt_count,
 		          s.symbol, s.timeframe, s.direction, s.candle_start, s.candle_close,
-		          s.close_price::float8, s.rsi::float8, s.ema_rsi::float8, s.rsi_length, s.ema_length, s.detected_at
+		          s.close_price::float8, s.rsi::float8, s.ema_rsi::float8, s.rsi_length, s.ema_length, s.detected_at,
+		          s.market_regime,
+		          COALESCE(s.market_adx::float8, 0), s.market_adx IS NOT NULL,
+		          COALESCE(s.market_chop::float8, 0), s.market_chop IS NOT NULL,
+		          COALESCE(s.market_ema::float8, 0), s.market_ema IS NOT NULL
 	`, limit, lease.Seconds(), telegramIDs)
 	if err != nil {
 		return nil, fmt.Errorf("claim pending signal deliveries: %w", err)
@@ -466,6 +517,10 @@ func (r *Repository) claimPendingDeliveries(ctx context.Context, limit int, leas
 			&item.UserID, &item.TelegramID, &item.SignalID, &item.Status, &item.AttemptCount,
 			&item.Symbol, &item.Timeframe, &item.Direction, &item.CandleStart, &item.CandleClose,
 			&item.ClosePrice, &item.RSI, &item.EMARSI, &item.RSILength, &item.EMALength, &item.DetectedAt,
+			&item.MarketRegime,
+			&item.MarketADX, &item.MarketADXReady,
+			&item.MarketCHOP, &item.MarketCHOPReady,
+			&item.MarketEMA, &item.MarketEMAReady,
 		); err != nil {
 			return nil, fmt.Errorf("scan claimed signal delivery: %w", err)
 		}
@@ -537,7 +592,11 @@ func (r *Repository) ListUserSignals(ctx context.Context, userID int64, filters 
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT s.id, s.symbol, s.timeframe, s.direction, s.candle_start, s.candle_close,
-		       s.close_price::float8, s.rsi::float8, s.ema_rsi::float8, s.rsi_length, s.ema_length, s.detected_at
+		       s.close_price::float8, s.rsi::float8, s.ema_rsi::float8, s.rsi_length, s.ema_length, s.detected_at,
+		       s.market_regime,
+		       COALESCE(s.market_adx::float8, 0), s.market_adx IS NOT NULL,
+		       COALESCE(s.market_chop::float8, 0), s.market_chop IS NOT NULL,
+		       COALESCE(s.market_ema::float8, 0), s.market_ema IS NOT NULL
 		FROM signal_deliveries d
 		JOIN signals s ON s.id = d.signal_id
 		WHERE d.user_id = $1
@@ -560,6 +619,10 @@ func (r *Repository) ListUserSignals(ctx context.Context, userID int64, filters 
 		if err := rows.Scan(
 			&item.ID, &item.Symbol, &item.Timeframe, &item.Direction, &item.CandleStart,
 			&item.CandleClose, &item.ClosePrice, &item.RSI, &item.EMARSI, &item.RSILength, &item.EMALength, &item.DetectedAt,
+			&item.MarketRegime,
+			&item.MarketADX, &item.MarketADXReady,
+			&item.MarketCHOP, &item.MarketCHOPReady,
+			&item.MarketEMA, &item.MarketEMAReady,
 		); err != nil {
 			return nil, fmt.Errorf("scan user signal history: %w", err)
 		}

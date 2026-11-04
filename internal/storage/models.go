@@ -64,7 +64,16 @@ type Signal struct {
 	ClosePrice  float64
 	RSI         float64
 	EMARSI      float64
-	DetectedAt  time.Time
+
+	MarketRegime   string
+	MarketADX      float64
+	MarketADXReady bool
+	MarketCHOP     float64
+	MarketCHOPReady bool
+	MarketEMA      float64
+	MarketEMAReady bool
+
+	DetectedAt time.Time
 }
 
 // ScannerState is the durable processing cursor and the last calculated values.
@@ -98,7 +107,16 @@ type Delivery struct {
 	ClosePrice   float64
 	RSI          float64
 	EMARSI       float64
-	DetectedAt   time.Time
+
+	MarketRegime   string
+	MarketADX      float64
+	MarketADXReady bool
+	MarketCHOP     float64
+	MarketCHOPReady bool
+	MarketEMA      float64
+	MarketEMAReady bool
+
+	DetectedAt time.Time
 }
 
 // SignalFilters limits a user's signal history.
