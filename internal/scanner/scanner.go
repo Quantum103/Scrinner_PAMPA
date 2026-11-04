@@ -26,6 +26,15 @@ type Repository interface {
 	CommitScannedCandle(context.Context, storage.ScannerState, *storage.Signal) (int64, bool, int64, error)
 }
 
+type ProfileRepository interface {
+	ListScannerWorkloads(context.Context) ([]storage.ScannerWorkload, error)
+	ListScannerProfilesForPair(context.Context, string, string) ([]storage.ScannerProfile, error)
+	HasActiveScannerUsers(context.Context) (bool, error)
+	GetScannerProfileState(context.Context, string, string, int, int) (storage.ScannerProfileState, error)
+	InitializeScannerProfileState(context.Context, storage.ScannerProfileState) (storage.ScannerProfileState, bool, error)
+	CommitScannerProfileCandle(context.Context, storage.ScannerProfileState, *storage.Signal) (int64, bool, int64, error)
+}
+
 type Settings struct {
 	Timeframes      []string
 	RSILength       int
@@ -43,9 +52,10 @@ type Report struct {
 }
 
 type Scanner struct {
-	source     MarketDataSource
-	repository Repository
-	settings   Settings
+	source            MarketDataSource
+	repository        Repository
+	profileRepository ProfileRepository
+	settings          Settings
 	now        func() time.Time
 
 	// Processing is serialized so REST reconciliation and WebSocket candle
@@ -65,8 +75,9 @@ func New(source MarketDataSource, repository Repository, settings Settings) (*Sc
 		return nil, err
 	}
 	settings.Timeframes = append([]string(nil), settings.Timeframes...)
+	profileRepository, _ := repository.(ProfileRepository)
 	return &Scanner{
-		source: source, repository: repository, settings: settings,
+		source: source, repository: repository, profileRepository: profileRepository, settings: settings,
 		now: time.Now, history: make(map[string][]bybit.Candle),
 	}, nil
 }
@@ -106,6 +117,19 @@ func (s *Scanner) ScanOnce(ctx context.Context) (Report, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.profileRepository != nil {
+		workloads, err := s.profileRepository.ListScannerWorkloads(ctx)
+		if err != nil {
+			return Report{}, fmt.Errorf("list personalized scanner workloads: %w", err)
+		}
+		if len(workloads) > 0 {
+			return s.scanProfileWorkloadsLocked(ctx, workloads)
+		}
+	}
+	return s.scanLegacyOnceLocked(ctx)
+}
+
+func (s *Scanner) scanLegacyOnceLocked(ctx context.Context) (Report, error) {
 	instruments, err := s.repository.ListActiveInstruments(ctx, s.settings.InstrumentLimit)
 	if err != nil {
 		return Report{}, fmt.Errorf("list active Bybit instruments: %w", err)
@@ -145,6 +169,112 @@ func (s *Scanner) ScanOnce(ctx context.Context) (Report, error) {
 	return report, errors.Join(scanErrors...)
 }
 
+type profilePairWork struct {
+	symbol    string
+	timeframe string
+	profiles  map[storage.ScannerProfile]struct{}
+}
+
+func (s *Scanner) scanProfileWorkloadsLocked(ctx context.Context, workloads []storage.ScannerWorkload) (Report, error) {
+	pairs := make(map[string]*profilePairWork)
+	instruments := make(map[string]struct{})
+	for _, workload := range workloads {
+		if _, err := timeframeDuration(workload.Timeframe); err != nil {
+			return Report{}, err
+		}
+		profile := storage.ScannerProfile{RSILength: workload.RSILength, EMALength: workload.EMALength}
+		if profile.RSILength < 2 || profile.RSILength > 500 ||
+			profile.EMALength < 1 || profile.EMALength > 500 ||
+			profile.RSILength+profile.EMALength > 1000 {
+			return Report{}, fmt.Errorf("invalid active RSI/EMA profile: RSI=%d EMA=%d", profile.RSILength, profile.EMALength)
+		}
+		for _, rawSymbol := range workload.Symbols {
+			symbol := strings.ToUpper(strings.TrimSpace(rawSymbol))
+			if symbol == "" {
+				return Report{}, errors.New("personalized scanner workload contains an empty symbol")
+			}
+			key := historyKey(symbol, workload.Timeframe)
+			pair := pairs[key]
+			if pair == nil {
+				pair = &profilePairWork{
+					symbol: symbol, timeframe: workload.Timeframe,
+					profiles: make(map[storage.ScannerProfile]struct{}),
+				}
+				pairs[key] = pair
+			}
+			pair.profiles[profile] = struct{}{}
+			instruments[symbol] = struct{}{}
+		}
+	}
+	if len(pairs) == 0 {
+		return Report{}, nil
+	}
+
+	serverTime, err := s.source.GetServerTime(ctx)
+	if err != nil {
+		return Report{}, fmt.Errorf("get Bybit exchange time for personalized scan: %w", err)
+	}
+	if serverTime.IsZero() {
+		return Report{}, errors.New("Bybit exchange returned an empty server time")
+	}
+	serverTime = serverTime.UTC()
+
+	keys := make([]string, 0, len(pairs))
+	for key := range pairs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	report := Report{Instruments: len(instruments)}
+	var scanErrors []error
+	for _, key := range keys {
+		pair := pairs[key]
+		maxHistory := s.settings.HistoryCandles
+		profiles := make([]storage.ScannerProfile, 0, len(pair.profiles))
+		for profile := range pair.profiles {
+			profiles = append(profiles, profile)
+			if required := profile.RSILength + profile.EMALength; required > maxHistory {
+				maxHistory = required
+			}
+		}
+		sort.Slice(profiles, func(i, j int) bool {
+			if profiles[i].RSILength == profiles[j].RSILength {
+				return profiles[i].EMALength < profiles[j].EMALength
+			}
+			return profiles[i].RSILength < profiles[j].RSILength
+		})
+
+		candles, err := s.source.GetKlinesAt(ctx, pair.symbol, pair.timeframe, maxHistory, serverTime)
+		if err != nil {
+			scanErrors = append(scanErrors, fmt.Errorf("%s %s: load closed candles: %w", pair.symbol, pair.timeframe, err))
+			continue
+		}
+		closed, err := normalizeCandles(candles, pair.symbol, pair.timeframe, serverTime)
+		if err != nil {
+			scanErrors = append(scanErrors, fmt.Errorf("%s %s: %w", pair.symbol, pair.timeframe, err))
+			continue
+		}
+		if len(closed) > maxHistory {
+			closed = closed[len(closed)-maxHistory:]
+		}
+		s.history[key] = closed
+		report.PairsScanned++
+
+		for _, profile := range profiles {
+			pairReport, err := s.processProfilePairCandlesLocked(ctx, pair.symbol, pair.timeframe, profile, closed)
+			if err != nil {
+				scanErrors = append(scanErrors, fmt.Errorf("%s %s RSI(%d)/EMA(%d): %w",
+					pair.symbol, pair.timeframe, profile.RSILength, profile.EMALength, err))
+				continue
+			}
+			report.CandlesProcessed += pairReport.CandlesProcessed
+			report.SignalsInserted += pairReport.SignalsInserted
+			report.DeliveriesQueued += pairReport.DeliveriesQueued
+		}
+	}
+	return report, errors.Join(scanErrors...)
+}
+
 // ProcessClosedCandle consumes a confirmed WebSocket candle. The in-memory
 // history is populated by ScanOnce; on an unexpected gap it backfills that
 // pair from REST before calculating indicators.
@@ -152,6 +282,26 @@ func (s *Scanner) ProcessClosedCandle(ctx context.Context, candle bybit.Candle) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.profileRepository != nil {
+		profiles, err := s.profileRepository.ListScannerProfilesForPair(ctx, candle.Symbol, candle.Timeframe)
+		if err != nil {
+			return Report{}, fmt.Errorf("load scanner profiles for confirmed candle: %w", err)
+		}
+		if len(profiles) > 0 {
+			return s.processProfileClosedCandleLocked(ctx, candle, profiles)
+		}
+		hasUsers, err := s.profileRepository.HasActiveScannerUsers(ctx)
+		if err != nil {
+			return Report{}, fmt.Errorf("check active personalized scanner users: %w", err)
+		}
+		if hasUsers {
+			return Report{PairsScanned: 1}, nil
+		}
+	}
+	return s.processLegacyClosedCandleLocked(ctx, candle)
+}
+
+func (s *Scanner) processLegacyClosedCandleLocked(ctx context.Context, candle bybit.Candle) (Report, error) {
 	symbol := strings.ToUpper(strings.TrimSpace(candle.Symbol))
 	if symbol == "" {
 		return Report{}, errors.New("WebSocket candle symbol is required")
@@ -174,7 +324,7 @@ func (s *Scanner) ProcessClosedCandle(ctx context.Context, candle bybit.Candle) 
 		return Report{PairsScanned: 1}, nil
 	}
 
-	needsBackfill := len(history) < s.settings.RSILength+s.settings.EMALength+1
+	needsBackfill := len(history) < s.settings.RSILength+s.settings.EMALength
 	if len(history) > 0 {
 		interval, _ := timeframeDuration(candle.Timeframe)
 		needsBackfill = needsBackfill || candle.Start.After(history[len(history)-1].Start.Add(interval))
@@ -206,6 +356,194 @@ func (s *Scanner) ProcessClosedCandle(ctx context.Context, candle bybit.Candle) 
 	report.SignalsInserted = pairReport.SignalsInserted
 	report.DeliveriesQueued = pairReport.DeliveriesQueued
 	return report, err
+}
+
+func (s *Scanner) processProfileClosedCandleLocked(
+	ctx context.Context, candle bybit.Candle, profiles []storage.ScannerProfile,
+) (Report, error) {
+	symbol := strings.ToUpper(strings.TrimSpace(candle.Symbol))
+	if symbol == "" {
+		return Report{}, errors.New("WebSocket candle symbol is required")
+	}
+	if _, err := timeframeDuration(candle.Timeframe); err != nil {
+		return Report{}, err
+	}
+	closed, err := normalizeCandles([]bybit.Candle{candle}, symbol, candle.Timeframe, candle.Close)
+	if err != nil {
+		return Report{}, fmt.Errorf("validate personalized WebSocket candle: %w", err)
+	}
+	if len(closed) != 1 {
+		return Report{}, errors.New("WebSocket confirmed candle was not closed")
+	}
+	candle = closed[0]
+
+	maxHistory := s.settings.HistoryCandles
+	for _, profile := range profiles {
+		if profile.RSILength < 2 || profile.RSILength > 500 ||
+			profile.EMALength < 1 || profile.EMALength > 500 ||
+			profile.RSILength+profile.EMALength > 1000 {
+			return Report{}, fmt.Errorf("invalid active RSI/EMA profile: RSI=%d EMA=%d", profile.RSILength, profile.EMALength)
+		}
+		if required := profile.RSILength + profile.EMALength; required > maxHistory {
+			maxHistory = required
+		}
+	}
+	key := historyKey(symbol, candle.Timeframe)
+	history := s.history[key]
+	needsBackfill := len(history) < maxHistory
+	if len(history) > 0 {
+		interval, _ := timeframeDuration(candle.Timeframe)
+		if candle.Start.After(history[len(history)-1].Start.Add(interval)) {
+			needsBackfill = true
+		}
+	}
+	if needsBackfill {
+		serverTime, err := s.source.GetServerTime(ctx)
+		if err != nil {
+			return Report{}, fmt.Errorf("get exchange time for personalized WebSocket recovery: %w", err)
+		}
+		recovered, err := s.source.GetKlinesAt(ctx, symbol, candle.Timeframe, maxHistory, serverTime)
+		if err != nil {
+			return Report{}, fmt.Errorf("backfill %s %s for personalized profiles: %w", symbol, candle.Timeframe, err)
+		}
+		normalized, err := normalizeCandles(recovered, symbol, candle.Timeframe, serverTime)
+		if err != nil {
+			return Report{}, fmt.Errorf("normalize personalized REST recovery: %w", err)
+		}
+		history = mergeCandles(normalized, []bybit.Candle{candle})
+	} else {
+		history = mergeCandles(history, []bybit.Candle{candle})
+	}
+	if len(history) > maxHistory {
+		history = history[len(history)-maxHistory:]
+	}
+	s.history[key] = history
+
+	report := Report{PairsScanned: 1}
+	var scanErrors []error
+	seen := make(map[storage.ScannerProfile]struct{}, len(profiles))
+	for _, profile := range profiles {
+		if _, exists := seen[profile]; exists {
+			continue
+		}
+		seen[profile] = struct{}{}
+		pairReport, err := s.processProfilePairCandlesLocked(ctx, symbol, candle.Timeframe, profile, history)
+		if err != nil {
+			scanErrors = append(scanErrors, fmt.Errorf("RSI(%d)/EMA(%d): %w", profile.RSILength, profile.EMALength, err))
+			continue
+		}
+		report.CandlesProcessed += pairReport.CandlesProcessed
+		report.SignalsInserted += pairReport.SignalsInserted
+		report.DeliveriesQueued += pairReport.DeliveriesQueued
+	}
+	return report, errors.Join(scanErrors...)
+}
+
+func (s *Scanner) processProfilePairCandlesLocked(
+	ctx context.Context, symbol, timeframe string, profile storage.ScannerProfile, closed []bybit.Candle,
+) (pairReport, error) {
+	if len(closed) == 0 {
+		return pairReport{}, nil
+	}
+	closes := make([]float64, len(closed))
+	for index, candle := range closed {
+		closes[index] = candle.ClosePrice
+	}
+	points, err := indicators.Calculate(closes, profile.RSILength, profile.EMALength)
+	if err != nil {
+		return pairReport{}, fmt.Errorf("calculate RSI/EMA RSI: %w", err)
+	}
+
+	state, err := s.profileRepository.GetScannerProfileState(
+		ctx, symbol, timeframe, profile.RSILength, profile.EMALength,
+	)
+	if errors.Is(err, storage.ErrNotFound) {
+		last := len(closed) - 1
+		if !points[last].RSIReady || !points[last].EMAReady {
+			return pairReport{}, fmt.Errorf("not enough closed candles to initialize RSI(%d)/EMA(%d)",
+				profile.RSILength, profile.EMALength)
+		}
+		baseline := storage.ScannerProfileState{
+			Symbol: symbol, Timeframe: timeframe,
+			RSILength: profile.RSILength, EMALength: profile.EMALength,
+			LastProcessedCandleStart: closed[last].Start,
+			LastClose: closed[last].ClosePrice,
+			LastRSI: points[last].RSI, LastEMARSI: points[last].EMARSI,
+			Initialized: true,
+		}
+		if _, _, err := s.profileRepository.InitializeScannerProfileState(ctx, baseline); err != nil {
+			return pairReport{}, fmt.Errorf("initialize profile baseline: %w", err)
+		}
+		return pairReport{}, nil
+	}
+	if err != nil {
+		return pairReport{}, fmt.Errorf("load profile cursor: %w", err)
+	}
+
+	var report pairReport
+	for index, current := range closed {
+		if !current.Start.After(state.LastProcessedCandleStart) {
+			continue
+		}
+		point := points[index]
+		if !point.RSIReady || !point.EMAReady {
+			continue
+		}
+
+		next := state
+		next.LastProcessedCandleStart = current.Start
+		next.LastClose = current.ClosePrice
+		next.LastRSI = point.RSI
+		next.LastEMARSI = point.EMARSI
+		next.Initialized = true
+
+		direction := ""
+		if index > 0 && contiguous(closed[index-1], current, timeframe) {
+			previous := points[index-1]
+			if previous.RSIReady && previous.EMAReady {
+				switch {
+				case previous.RSI <= previous.EMARSI && point.RSI > point.EMARSI:
+					direction = "LONG"
+				case previous.RSI >= previous.EMARSI && point.RSI < point.EMARSI:
+					direction = "SHORT"
+				}
+			}
+		}
+		var signal *storage.Signal
+		if direction != "" {
+			crossAt := current.Close.UTC()
+			next.LastCrossDirection = direction
+			next.LastCrossAt = &crossAt
+			signal = &storage.Signal{
+				Symbol: symbol, Timeframe: timeframe, Direction: direction,
+				CandleStart: current.Start, CandleClose: current.Close,
+				ClosePrice: current.ClosePrice, RSI: point.RSI, EMARSI: point.EMARSI,
+				RSILength: profile.RSILength, EMALength: profile.EMALength,
+				DetectedAt: s.now().UTC(),
+			}
+		}
+		signalID, inserted, queued, err := s.profileRepository.CommitScannerProfileCandle(ctx, next, signal)
+		if errors.Is(err, storage.ErrStaleCandle) {
+			state, err = s.profileRepository.GetScannerProfileState(
+				ctx, symbol, timeframe, profile.RSILength, profile.EMALength,
+			)
+			if err != nil {
+				return report, fmt.Errorf("reload profile cursor after competing update: %w", err)
+			}
+			continue
+		}
+		if err != nil {
+			return report, fmt.Errorf("commit profile candle %s (signal %d): %w",
+				current.Start.Format(time.RFC3339), signalID, err)
+		}
+		state = next
+		report.CandlesProcessed++
+		if inserted {
+			report.SignalsInserted++
+			report.DeliveriesQueued += queued
+		}
+	}
+	return report, nil
 }
 
 type pairReport struct {

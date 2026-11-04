@@ -349,3 +349,20 @@ func (r *Repository) CommitScannerProfileCandle(
 	}
 	return signalID, inserted, queued, nil
 }
+
+
+// HasActiveScannerUsers differentiates an empty active-user universe from an
+// excluded market pair. With no active users the legacy global scanner may run.
+func (r *Repository) HasActiveScannerUsers(ctx context.Context) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM telegram_users
+			WHERE is_active = TRUE
+		)
+	`).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check active Telegram scanner users: %w", err)
+	}
+	return exists, nil
+}

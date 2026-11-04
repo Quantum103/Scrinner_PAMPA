@@ -353,3 +353,122 @@ func TestProcessClosedWebSocketCandleBackfillsMissedCandles(t *testing.T) {
 		t.Fatalf("unexpected recovered signals: %+v", repository.signals)
 	}
 }
+
+
+type profileFakeRepository struct {
+	*fakeRepository
+	workloads []storage.ScannerWorkload
+	states    map[string]storage.ScannerProfileState
+}
+
+func newProfileFakeRepository(workloads []storage.ScannerWorkload) *profileFakeRepository {
+	return &profileFakeRepository{
+		fakeRepository: newFakeRepository(),
+		workloads: workloads,
+		states: make(map[string]storage.ScannerProfileState),
+	}
+}
+
+func profileStateKey(symbol, timeframe string, rsiLength, emaLength int) string {
+	return fmt.Sprintf("%s/%s/%d/%d", symbol, timeframe, rsiLength, emaLength)
+}
+
+func (f *profileFakeRepository) ListScannerWorkloads(context.Context) ([]storage.ScannerWorkload, error) {
+	return append([]storage.ScannerWorkload(nil), f.workloads...), nil
+}
+
+func (f *profileFakeRepository) ListScannerProfilesForPair(_ context.Context, symbol, timeframe string) ([]storage.ScannerProfile, error) {
+	profiles := make([]storage.ScannerProfile, 0)
+	for _, workload := range f.workloads {
+		if workload.Timeframe != timeframe {
+			continue
+		}
+		for _, selected := range workload.Symbols {
+			if selected == symbol {
+				profiles = append(profiles, storage.ScannerProfile{RSILength: workload.RSILength, EMALength: workload.EMALength})
+				break
+			}
+		}
+	}
+	return profiles, nil
+}
+
+func (f *profileFakeRepository) HasActiveScannerUsers(context.Context) (bool, error) {
+	return len(f.workloads) > 0, nil
+}
+
+func (f *profileFakeRepository) GetScannerProfileState(_ context.Context, symbol, timeframe string, rsiLength, emaLength int) (storage.ScannerProfileState, error) {
+	state, ok := f.states[profileStateKey(symbol, timeframe, rsiLength, emaLength)]
+	if !ok {
+		return storage.ScannerProfileState{}, storage.ErrNotFound
+	}
+	return state, nil
+}
+
+func (f *profileFakeRepository) InitializeScannerProfileState(_ context.Context, baseline storage.ScannerProfileState) (storage.ScannerProfileState, bool, error) {
+	key := profileStateKey(baseline.Symbol, baseline.Timeframe, baseline.RSILength, baseline.EMALength)
+	if current, exists := f.states[key]; exists {
+		return current, false, nil
+	}
+	f.states[key] = baseline
+	return baseline, true, nil
+}
+
+func (f *profileFakeRepository) CommitScannerProfileCandle(_ context.Context, state storage.ScannerProfileState, signal *storage.Signal) (int64, bool, int64, error) {
+	key := profileStateKey(state.Symbol, state.Timeframe, state.RSILength, state.EMALength)
+	if current, exists := f.states[key]; exists && !state.LastProcessedCandleStart.After(current.LastProcessedCandleStart) {
+		return 0, false, 0, storage.ErrStaleCandle
+	}
+	f.states[key] = state
+	f.commits++
+	if signal == nil {
+		return 0, false, 0, nil
+	}
+	f.signals = append(f.signals, *signal)
+	f.deliveries++
+	return int64(len(f.signals)), true, 1, nil
+}
+
+
+func TestPersonalizedScannerSharesMarketFetchButKeepsProfileCursors(t *testing.T) {
+	closes := []float64{100, 101, 102, 103, 102, 101, 100, 99, 98, 99, 100, 101}
+	start := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	serverTime := start.Add(time.Duration(len(closes)) * 5 * time.Minute)
+	source := &fakeSource{
+		serverTime: serverTime,
+		candles: map[string][]bybit.Candle{
+			pairKey("BTCUSDT", "5"): makeCandles("BTCUSDT", "5", closes, start, serverTime),
+		},
+	}
+	repository := newProfileFakeRepository([]storage.ScannerWorkload{
+		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+		{RSILength: 5, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	})
+	repository.instruments = []storage.Instrument{{Symbol: "BTCUSDT"}}
+	service, err := New(source, repository, Settings{
+		Timeframes: []string{"5"}, RSILength: 14, EMALength: 9,
+		InstrumentLimit: 10, HistoryCandles: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("personalized ScanOnce() error = %v", err)
+	}
+	if report.Instruments != 1 || report.PairsScanned != 1 || source.calls != 1 {
+		t.Fatalf("expected one shared market fetch for two profiles: report=%+v calls=%d", report, source.calls)
+	}
+	if len(repository.states) != 2 {
+		t.Fatalf("stored profile cursors = %d, want 2: %+v", len(repository.states), repository.states)
+	}
+	for _, profile := range []storage.ScannerProfile{{RSILength: 3, EMALength: 2}, {RSILength: 5, EMALength: 2}} {
+		state, ok := repository.states[profileStateKey("BTCUSDT", "5", profile.RSILength, profile.EMALength)]
+		if !ok || !state.Initialized || !state.LastProcessedCandleStart.Equal(start.Add(time.Duration(len(closes)-1)*5*time.Minute)) {
+			t.Fatalf("profile cursor missing or incorrect for %+v: %+v", profile, state)
+		}
+	}
+	if len(repository.signals) != 0 {
+		t.Fatalf("initial personalized scan must establish baselines, not replay history: %+v", repository.signals)
+	}
+}
