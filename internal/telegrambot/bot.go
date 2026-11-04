@@ -787,5 +787,5 @@ func wait(ctx context.Context, duration time.Duration) bool {
 
 const (
 	authPromptText = "Для доступа к RSI Scanner отправьте общий пароль отдельным сообщением в этот личный чат. После проверки парольное сообщение будет удалено."
-	helpText  = "RSI Scanner отслеживает пересечения RSI и EMA RSI на закрытых свечах Bybit USDT Perpetual.\n\n/start — главное меню\n/signals — последние сигналы\n/history — история сигналов\n/settings — настройки и фильтры\n/instruments — ручные правила инструментов\n/include BTCUSDT — включить инструмент\n/exclude BTCUSDT — исключить инструмент\n/reset BTCUSDT — удалить правило"
+	helpText       = "RSI Scanner отслеживает пересечения RSI и EMA RSI на закрытых свечах Bybit USDT Perpetual.\n\n/start — главное меню\n/signals — последние сигналы\n/history — история сигналов\n/settings — настройки и фильтры\n/instruments — ручные правила инструментов\n/include BTCUSDT — включить инструмент\n/exclude BTCUSDT — исключить инструмент\n/reset BTCUSDT — удалить правило"
 )

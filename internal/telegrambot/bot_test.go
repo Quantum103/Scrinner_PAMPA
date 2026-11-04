@@ -9,10 +9,10 @@ import (
 )
 
 type fakeTelegramAPI struct {
-	sentMessages  []string
-	edited        []string
-	answered      int
-	deleted       []int64
+	sentMessages []string
+	edited       []string
+	answered     int
+	deleted      []int64
 }
 
 func (f *fakeTelegramAPI) getUpdates(context.Context, int64, int64) ([]telegramUpdate, error) {
@@ -154,9 +154,9 @@ func TestPasswordAuthenticationDeletesPasswordMessageAndPersistsUser(t *testing.
 	bot, api, repository := newTestBot(t)
 	message := &telegramMessage{
 		MessageID: 10,
-		Chat: telegramChat{ID: 1001, Type: "private"},
-		From: &telegramUser{ID: 1001, FirstName: "Authorized"},
-		Text: "/start",
+		Chat:      telegramChat{ID: 1001, Type: "private"},
+		From:      &telegramUser{ID: 1001, FirstName: "Authorized"},
+		Text:      "/start",
 	}
 	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
 		t.Fatalf("start update: %v", err)
@@ -213,9 +213,9 @@ func TestInactiveUserMustAuthenticateAgain(t *testing.T) {
 	repository.users[1001] = storage.TelegramUser{ID: 1, TelegramID: 1001, IsActive: false}
 	message := &telegramMessage{
 		MessageID: 7,
-		Chat: telegramChat{ID: 1001, Type: "private"},
-		From: &telegramUser{ID: 1001, FirstName: "Existing"},
-		Text: "correct-horse-battery-staple",
+		Chat:      telegramChat{ID: 1001, Type: "private"},
+		From:      &telegramUser{ID: 1001, FirstName: "Existing"},
+		Text:      "correct-horse-battery-staple",
 	}
 	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
 		t.Fatalf("reauthentication update: %v", err)

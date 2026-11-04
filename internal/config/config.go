@@ -235,4 +235,3 @@ func splitCSV(value string) []string {
 	}
 	return result
 }
-
