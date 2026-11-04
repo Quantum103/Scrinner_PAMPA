@@ -615,9 +615,9 @@ func formatSignal(signal storage.Signal) string {
 	if signal.Direction == "SHORT" {
 		direction = "🔴 SHORT"
 	}
-	return fmt.Sprintf("%s · %s\n%s\nЦена закрытия: %s\nRSI: %.2f · EMA RSI: %.2f\nСвеча закрылась: %s UTC",
+	return fmt.Sprintf("%s · %s\n%s\nЦена закрытия: %s\nRSI(%d): %.2f · EMA RSI(%d): %.2f\nСвеча закрылась: %s UTC",
 		signal.Timeframe+"m", direction, signal.Symbol, formatPrice(signal.ClosePrice),
-		signal.RSI, signal.EMARSI, signal.CandleClose.UTC().Format("2006-01-02 15:04"))
+		signal.RSILength, signal.RSI, signal.EMALength, signal.EMARSI, signal.CandleClose.UTC().Format("2006-01-02 15:04"))
 }
 
 func formatDelivery(delivery storage.Delivery) string {
@@ -625,6 +625,7 @@ func formatDelivery(delivery storage.Delivery) string {
 		Symbol: delivery.Symbol, Timeframe: delivery.Timeframe, Direction: delivery.Direction,
 		CandleStart: delivery.CandleStart, CandleClose: delivery.CandleClose,
 		ClosePrice: delivery.ClosePrice, RSI: delivery.RSI, EMARSI: delivery.EMARSI,
+		RSILength: delivery.RSILength, EMALength: delivery.EMALength,
 		DetectedAt: delivery.DetectedAt,
 	})
 }

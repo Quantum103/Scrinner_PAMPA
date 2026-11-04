@@ -310,6 +310,8 @@ func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timefram
 			next.LastCrossAt = &crossAt
 			signal = &storage.Signal{
 				Symbol:      symbol,
+				RSILength:   s.settings.RSILength,
+				EMALength:   s.settings.EMALength,
 				Timeframe:   timeframe,
 				Direction:   direction,
 				CandleStart: candle.Start,

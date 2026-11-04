@@ -235,6 +235,9 @@ func validateSettings(settings UserSettings) error {
 	if settings.EMALength < 1 || settings.EMALength > 500 {
 		return fmt.Errorf("%w: EMA length must be between 1 and 500", ErrInvalidInput)
 	}
+	if settings.RSILength+settings.EMALength > 1000 {
+		return fmt.Errorf("%w: RSI and EMA lengths together must not exceed 1000 candles", ErrInvalidInput)
+	}
 	if settings.InstrumentLimit < 1 || settings.InstrumentLimit > 10000 {
 		return fmt.Errorf("%w: instrument limit must be between 1 and 10000", ErrInvalidInput)
 	}

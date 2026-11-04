@@ -54,6 +54,8 @@ type InstrumentPreference struct {
 // Signal represents one confirmed RSI/EMA crossover on a closed candle.
 type Signal struct {
 	ID          int64
+	RSILength   int
+	EMALength   int
 	Symbol      string
 	Timeframe   string
 	Direction   string
@@ -82,6 +84,8 @@ type ScannerState struct {
 // Delivery is one signal notification assigned to a Telegram user.
 type Delivery struct {
 	UserID       int64
+	RSILength    int
+	EMALength    int
 	TelegramID   int64
 	SignalID     int64
 	Status       string

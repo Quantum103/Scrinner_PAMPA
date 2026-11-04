@@ -33,30 +33,39 @@ func (r *Repository) SaveSignal(ctx context.Context, signal Signal) (int64, bool
 }
 
 func insertSignal(ctx context.Context, tx pgx.Tx, signal Signal) (int64, bool, error) {
+	rsiLength, emaLength := signalPeriods(signal)
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO signals (
 			symbol, timeframe, direction, candle_start, candle_close,
-			close_price, rsi, ema_rsi, detected_at
+			close_price, rsi, ema_rsi, rsi_length, ema_length, detected_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()))
-		ON CONFLICT (symbol, timeframe, candle_start, direction) DO NOTHING
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()))
+		ON CONFLICT (symbol, timeframe, candle_start, direction, rsi_length, ema_length) DO NOTHING
 	`, strings.ToUpper(signal.Symbol), signal.Timeframe, signal.Direction,
 		signal.CandleStart, signal.CandleClose, signal.ClosePrice, signal.RSI,
-		signal.EMARSI, nullableDetectedAt(signal.DetectedAt))
+		signal.EMARSI, rsiLength, emaLength, nullableDetectedAt(signal.DetectedAt))
 	if err != nil {
 		return 0, false, fmt.Errorf("insert signal %s %s %s: %w", signal.Symbol, signal.Timeframe, signal.Direction, err)
 	}
 	inserted := tag.RowsAffected() == 1
-
 	var id int64
 	err = tx.QueryRow(ctx, `
 		SELECT id FROM signals
 		WHERE symbol = $1 AND timeframe = $2 AND candle_start = $3 AND direction = $4
-	`, strings.ToUpper(signal.Symbol), signal.Timeframe, signal.CandleStart, signal.Direction).Scan(&id)
+		  AND rsi_length = $5 AND ema_length = $6
+	`, strings.ToUpper(signal.Symbol), signal.Timeframe, signal.CandleStart, signal.Direction,
+		rsiLength, emaLength).Scan(&id)
 	if err != nil {
 		return 0, false, fmt.Errorf("load saved signal ID: %w", err)
 	}
 	return id, inserted, nil
+}
+
+func signalPeriods(signal Signal) (int, int) {
+	rsiLength, emaLength := signal.RSILength, signal.EMALength
+	if rsiLength == 0 { rsiLength = 14 }
+	if emaLength == 0 { emaLength = 9 }
+	return rsiLength, emaLength
 }
 
 func nullableDetectedAt(value time.Time) any {
@@ -87,6 +96,10 @@ func validateSignal(signal Signal) error {
 	}
 	if signal.EMARSI < 0 || signal.EMARSI > 100 || math.IsNaN(signal.EMARSI) || math.IsInf(signal.EMARSI, 0) {
 		return fmt.Errorf("%w: signal EMA RSI must be between 0 and 100", ErrInvalidInput)
+	}
+	rsiLength, emaLength := signalPeriods(signal)
+	if rsiLength < 2 || rsiLength > 500 || emaLength < 1 || emaLength > 500 || rsiLength+emaLength > 1000 {
+		return fmt.Errorf("%w: signal RSI/EMA periods must fit into the 1000-candle history limit", ErrInvalidInput)
 	}
 	return nil
 }
@@ -268,7 +281,7 @@ func enqueueSignalForEligibleUsers(ctx context.Context, executor signalDeliveryE
 	}
 	tag, err := executor.Exec(ctx, `
 		WITH selected_signal AS (
-			SELECT id, symbol, timeframe, direction
+			SELECT id, symbol, timeframe, direction, rsi_length, ema_length
 			FROM signals
 			WHERE id = $1
 		),
@@ -283,7 +296,9 @@ func enqueueSignalForEligibleUsers(ctx context.Context, executor signalDeliveryE
 		JOIN telegram_users u ON u.is_active = TRUE
 		JOIN user_settings settings ON settings.user_id = u.id
 		JOIN user_timeframes tf ON tf.user_id = u.id AND tf.timeframe = s.timeframe
-		WHERE (
+		WHERE settings.rsi_length = s.rsi_length
+		  AND settings.ema_length = s.ema_length
+		  AND (
 			(s.direction = 'LONG' AND settings.notify_long = TRUE)
 			OR (s.direction = 'SHORT' AND settings.notify_short = TRUE)
 		)
@@ -409,7 +424,7 @@ func (r *Repository) claimPendingDeliveries(ctx context.Context, limit int, leas
 		  AND u.is_active = TRUE
 		RETURNING d.user_id, u.telegram_id, d.signal_id, d.status, d.attempt_count,
 		          s.symbol, s.timeframe, s.direction, s.candle_start, s.candle_close,
-		          s.close_price::float8, s.rsi::float8, s.ema_rsi::float8, s.detected_at
+		          s.close_price::float8, s.rsi::float8, s.ema_rsi::float8, s.rsi_length, s.ema_length, s.detected_at
 	`, limit, lease.Seconds(), telegramIDs)
 	if err != nil {
 		return nil, fmt.Errorf("claim pending signal deliveries: %w", err)
@@ -422,7 +437,7 @@ func (r *Repository) claimPendingDeliveries(ctx context.Context, limit int, leas
 		if err := rows.Scan(
 			&item.UserID, &item.TelegramID, &item.SignalID, &item.Status, &item.AttemptCount,
 			&item.Symbol, &item.Timeframe, &item.Direction, &item.CandleStart, &item.CandleClose,
-			&item.ClosePrice, &item.RSI, &item.EMARSI, &item.DetectedAt,
+			&item.ClosePrice, &item.RSI, &item.EMARSI, &item.RSILength, &item.EMALength, &item.DetectedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan claimed signal delivery: %w", err)
 		}
@@ -494,7 +509,7 @@ func (r *Repository) ListUserSignals(ctx context.Context, userID int64, filters 
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT s.id, s.symbol, s.timeframe, s.direction, s.candle_start, s.candle_close,
-		       s.close_price::float8, s.rsi::float8, s.ema_rsi::float8, s.detected_at
+		       s.close_price::float8, s.rsi::float8, s.ema_rsi::float8, s.rsi_length, s.ema_length, s.detected_at
 		FROM signal_deliveries d
 		JOIN signals s ON s.id = d.signal_id
 		WHERE d.user_id = $1
@@ -516,7 +531,7 @@ func (r *Repository) ListUserSignals(ctx context.Context, userID int64, filters 
 		var item Signal
 		if err := rows.Scan(
 			&item.ID, &item.Symbol, &item.Timeframe, &item.Direction, &item.CandleStart,
-			&item.CandleClose, &item.ClosePrice, &item.RSI, &item.EMARSI, &item.DetectedAt,
+			&item.CandleClose, &item.ClosePrice, &item.RSI, &item.EMARSI, &item.RSILength, &item.EMALength, &item.DetectedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan user signal history: %w", err)
 		}
