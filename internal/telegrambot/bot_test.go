@@ -190,7 +190,7 @@ func TestPasswordAuthenticationLocksAfterFiveFailures(t *testing.T) {
 	message := &telegramMessage{
 		Chat: telegramChat{ID: 2002, Type: "private"},
 		From: &telegramUser{ID: 2002},
-		Text: "incorrect-password"
+		Text: "incorrect-password",
 	}
 	for attempt := 0; attempt < maxPasswordFailures; attempt++ {
 		message.MessageID = int64(attempt + 1)
