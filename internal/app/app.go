@@ -13,17 +13,19 @@ import (
 	"github.com/Quantum103/Scrinner_PAMPA/internal/config"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/market"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/migrations"
+	"github.com/Quantum103/Scrinner_PAMPA/internal/scanner"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type App struct {
-	pool       *pgxpool.Pool
-	storage    *storage.Repository
-	server     *http.Server
-	logger     *slog.Logger
-	config     config.Config
-	marketSync *market.Synchronizer
+	pool          *pgxpool.Pool
+	storage       *storage.Repository
+	server        *http.Server
+	logger        *slog.Logger
+	config        config.Config
+	marketSync    *market.Synchronizer
+	signalScanner *scanner.Scanner
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -66,6 +68,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		pool.Close()
 		return nil, fmt.Errorf("initialize Bybit market synchronizer: %w", err)
 	}
+	signalScanner, err := scanner.New(restClient, repository, scanner.Settings{
+		Timeframes: cfg.Scanner.Timeframes, RSILength: cfg.Scanner.RSILength,
+		EMALength: cfg.Scanner.EMALength, InstrumentLimit: cfg.Scanner.InstrumentLimit,
+		HistoryCandles: cfg.Scanner.HistoryCandles,
+	})
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize RSI scanner: %w", err)
+	}
 
 	server := &http.Server{
 		Addr:              cfg.App.HTTPAddr,
@@ -76,14 +87,23 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 
 	return &App{
 		pool: pool, storage: repository, server: server, logger: logger,
-		config: cfg, marketSync: marketSync,
+		config: cfg, marketSync: marketSync, signalScanner: signalScanner,
 	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go a.runMarketSync(runCtx)
+	marketReady := make(chan struct{})
+	go a.runMarketSync(runCtx, marketReady)
+	go func() {
+		select {
+		case <-marketReady:
+			a.runScanner(runCtx)
+		case <-runCtx.Done():
+			return
+		}
+	}()
 
 	serverErrors := make(chan error, 1)
 	go func() {
@@ -113,7 +133,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-func (a *App) runMarketSync(ctx context.Context) {
+func (a *App) runMarketSync(ctx context.Context, initialSyncDone chan<- struct{}) {
 	ticker := time.NewTicker(a.config.Scanner.RefreshInterval)
 	defer ticker.Stop()
 
@@ -132,12 +152,55 @@ func (a *App) runMarketSync(ctx context.Context) {
 	}
 
 	refresh()
+	close(initialSyncDone)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			refresh()
+		}
+	}
+}
+
+func (a *App) runScanner(ctx context.Context) {
+	ticker := time.NewTicker(a.config.Scanner.ScanInterval)
+	defer ticker.Stop()
+
+	scan := func() {
+		// Allow enough time for the REST rate limiter to serialize the configured pairs.
+		requests := a.config.Scanner.InstrumentLimit * len(a.config.Scanner.Timeframes)
+		timeout := 2*time.Minute + time.Duration(requests)*200*time.Millisecond
+		scanCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		report, err := a.signalScanner.ScanOnce(scanCtx)
+		if err != nil {
+			a.logger.Error("RSI scanner cycle completed with errors",
+				"error", err,
+				"instruments", report.Instruments,
+				"pairs_scanned", report.PairsScanned,
+				"candles_processed", report.CandlesProcessed,
+				"signals_inserted", report.SignalsInserted,
+			)
+			return
+		}
+		a.logger.Info("RSI scanner cycle completed",
+			"instruments", report.Instruments,
+			"pairs_scanned", report.PairsScanned,
+			"candles_processed", report.CandlesProcessed,
+			"signals_inserted", report.SignalsInserted,
+			"deliveries_queued", report.DeliveriesQueued,
+		)
+	}
+
+	scan()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			scan()
 		}
 	}
 }

@@ -420,3 +420,41 @@ func TestEnqueueSignalForEligibleUsersAppliesUserFilters(t *testing.T) {
 		t.Fatalf("signal was delivered to users outside saved filters: %+v", claimed)
 	}
 }
+
+func TestCommitScannedCandleAtomicallyQueuesEligibleDelivery(t *testing.T) {
+	repository, _ := testRepository(t)
+	ctx := context.Background()
+	user := createTestUser(t, repository)
+	symbol := createTestInstrument(t, repository)
+	start := time.Now().UTC().Truncate(5 * time.Minute).Add(-10 * time.Minute)
+	closeAt := start.Add(5 * time.Minute)
+
+	state := ScannerState{
+		Symbol: symbol, Timeframe: "5", LastProcessedCandleStart: start,
+		LastClose: 101, LastRSI: 55, LastEMARSI: 52,
+		LastCrossDirection: "LONG", LastCrossAt: &closeAt, Initialized: true,
+	}
+	signal := &Signal{
+		Symbol: symbol, Timeframe: "5", Direction: "LONG",
+		CandleStart: start, CandleClose: closeAt, ClosePrice: 101,
+		RSI: 55, EMARSI: 52,
+	}
+	signalID, inserted, queued, err := repository.CommitScannedCandle(ctx, state, signal)
+	if err != nil {
+		t.Fatalf("commit scanned candle: %v", err)
+	}
+	if signalID <= 0 || !inserted || queued != 1 {
+		t.Fatalf("signal commit = id:%d inserted:%t queued:%d, want id, true, 1", signalID, inserted, queued)
+	}
+
+	claimed, err := repository.ClaimPendingDeliveries(ctx, 10, time.Minute)
+	if err != nil {
+		t.Fatalf("claim queued delivery: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].UserID != user.ID || claimed[0].SignalID != signalID {
+		t.Fatalf("unexpected claimed deliveries: %+v", claimed)
+	}
+	if _, _, _, err := repository.CommitScannedCandle(ctx, state, signal); !errors.Is(err, ErrStaleCandle) {
+		t.Fatalf("replayed candle error = %v, want ErrStaleCandle", err)
+	}
+}

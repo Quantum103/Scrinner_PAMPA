@@ -214,8 +214,7 @@ func (c *Client) GetKlines(ctx context.Context, symbol, timeframe string, limit 
 	if symbol == "" {
 		return nil, errors.New("Bybit kline symbol is required")
 	}
-	interval, err := timeframeDuration(timeframe)
-	if err != nil {
+	if _, err := timeframeDuration(timeframe); err != nil {
 		return nil, err
 	}
 	if limit < 1 || limit > 1000 {
@@ -225,6 +224,27 @@ func (c *Client) GetKlines(ctx context.Context, symbol, timeframe string, limit 
 	if err != nil {
 		return nil, err
 	}
+	return c.GetKlinesAt(ctx, symbol, timeframe, limit, serverTime)
+}
+
+// GetKlinesAt reads candles using a shared exchange timestamp. A scanner can
+// fetch server time once and reuse it for every instrument/timeframe in a cycle.
+func (c *Client) GetKlinesAt(ctx context.Context, symbol, timeframe string, limit int, serverTime time.Time) ([]Candle, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if symbol == "" {
+		return nil, errors.New("Bybit kline symbol is required")
+	}
+	interval, err := timeframeDuration(timeframe)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > 1000 {
+		return nil, errors.New("Bybit kline limit must be between 1 and 1000")
+	}
+	if serverTime.IsZero() {
+		return nil, errors.New("Bybit exchange time is required")
+	}
+	serverTime = serverTime.UTC()
 	query := url.Values{
 		"category": {"linear"}, "symbol": {symbol},
 		"interval": {timeframe}, "limit": {strconv.Itoa(limit)},

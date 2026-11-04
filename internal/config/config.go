@@ -41,6 +41,7 @@ type ScannerConfig struct {
 	EMALength       int
 	InstrumentLimit int
 	RefreshInterval time.Duration
+	ScanInterval    time.Duration
 	HistoryCandles  int
 }
 
@@ -73,6 +74,7 @@ func Load() (Config, error) {
 			EMALength:       9,
 			InstrumentLimit: 100,
 			RefreshInterval: 15 * time.Minute,
+			ScanInterval:    time.Minute,
 			HistoryCandles:  300,
 		},
 	}
@@ -82,6 +84,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Scanner.RefreshInterval, err = durationEnv("SCANNER_REFRESH_INTERVAL", cfg.Scanner.RefreshInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.Scanner.ScanInterval, err = durationEnv("SCANNER_SCAN_INTERVAL", cfg.Scanner.ScanInterval); err != nil {
 		return Config{}, err
 	}
 	if cfg.Database.MaxConns, err = int32Env("DB_POOL_MAX_CONNS", cfg.Database.MaxConns); err != nil {
@@ -141,17 +146,20 @@ func (c Config) Validate() error {
 	if !strings.HasPrefix(c.Bybit.PublicWSURL, "wss://") {
 		return fmt.Errorf("BYBIT_PUBLIC_WS_URL must use wss://")
 	}
-	if c.Scanner.RSILength < 2 || c.Scanner.EMALength < 1 {
-		return fmt.Errorf("RSI_LENGTH must be at least 2 and EMA_LENGTH must be positive")
+	if c.Scanner.RSILength < 2 || c.Scanner.RSILength > 500 || c.Scanner.EMALength < 1 || c.Scanner.EMALength > 500 {
+		return fmt.Errorf("RSI_LENGTH must be 2..500 and EMA_LENGTH must be 1..500")
 	}
-	if c.Scanner.InstrumentLimit < 1 {
+	if c.Scanner.InstrumentLimit < 1 || c.Scanner.InstrumentLimit > 10000 {
 		return fmt.Errorf("SCANNER_INSTRUMENT_LIMIT must be positive")
 	}
 	if c.Scanner.RefreshInterval <= 0 {
 		return fmt.Errorf("SCANNER_REFRESH_INTERVAL must be positive")
 	}
-	if c.Scanner.HistoryCandles < c.Scanner.RSILength+c.Scanner.EMALength {
-		return fmt.Errorf("SCANNER_HISTORY_CANDLES must be at least RSI_LENGTH + EMA_LENGTH")
+	if c.Scanner.ScanInterval <= 0 {
+		return fmt.Errorf("SCANNER_SCAN_INTERVAL must be positive")
+	}
+	if c.Scanner.HistoryCandles < c.Scanner.RSILength+c.Scanner.EMALength || c.Scanner.HistoryCandles > 1000 {
+		return fmt.Errorf("SCANNER_HISTORY_CANDLES must be between RSI_LENGTH + EMA_LENGTH and 1000")
 	}
 	if len(c.Scanner.Timeframes) == 0 {
 		return fmt.Errorf("at least one scanner timeframe must be enabled")

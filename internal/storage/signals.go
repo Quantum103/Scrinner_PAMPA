@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func (r *Repository) SaveSignal(ctx context.Context, signal Signal) (int64, bool, error) {
@@ -168,26 +169,37 @@ func validateScannerState(state ScannerState) error {
 	return nil
 }
 
-// CommitClosedCandle advances a scanner cursor and saves its optional signal in one transaction.
-// A stale or duplicate candle cannot create a signal or move the cursor backwards.
+// CommitClosedCandle advances the scanner cursor and saves an optional signal in one transaction.
 func (r *Repository) CommitClosedCandle(ctx context.Context, state ScannerState, signal *Signal) (int64, bool, error) {
+	signalID, inserted, _, err := r.commitScannedCandle(ctx, state, signal, false)
+	return signalID, inserted, err
+}
+
+// CommitScannedCandle atomically advances the cursor, inserts a new signal and
+// creates all eligible user deliveries. A failure cannot leave a signal saved
+// without its initial delivery records.
+func (r *Repository) CommitScannedCandle(ctx context.Context, state ScannerState, signal *Signal) (int64, bool, int64, error) {
+	return r.commitScannedCandle(ctx, state, signal, true)
+}
+
+func (r *Repository) commitScannedCandle(ctx context.Context, state ScannerState, signal *Signal, enqueue bool) (int64, bool, int64, error) {
 	if err := validateScannerState(state); err != nil {
-		return 0, false, err
+		return 0, false, 0, err
 	}
 	if signal != nil {
 		if err := validateSignal(*signal); err != nil {
-			return 0, false, err
+			return 0, false, 0, err
 		}
 		if !strings.EqualFold(signal.Symbol, state.Symbol) ||
 			signal.Timeframe != state.Timeframe ||
 			!signal.CandleStart.Equal(state.LastProcessedCandleStart) {
-			return 0, false, fmt.Errorf("%w: signal must belong to the candle being committed", ErrInvalidInput)
+			return 0, false, 0, fmt.Errorf("%w: signal must belong to the candle being committed", ErrInvalidInput)
 		}
 	}
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return 0, false, fmt.Errorf("begin closed candle commit: %w", err)
+		return 0, false, 0, fmt.Errorf("begin closed candle commit: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
@@ -213,34 +225,48 @@ func (r *Repository) CommitClosedCandle(ctx context.Context, state ScannerState,
 		state.LastClose, state.LastRSI, state.LastEMARSI, state.LastCrossDirection,
 		nullableTime(state.LastCrossAt), state.Initialized).Scan(&advanced)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, ErrStaleCandle
+		return 0, false, 0, ErrStaleCandle
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("advance scanner cursor: %w", err)
+		return 0, false, 0, fmt.Errorf("advance scanner cursor: %w", err)
 	}
 
 	var signalID int64
 	signalInserted := false
+	var deliveriesEnqueued int64
 	if signal != nil {
-		var err error
 		signalID, signalInserted, err = insertSignal(ctx, tx, *signal)
 		if err != nil {
-			return 0, false, fmt.Errorf("insert signal during candle commit: %w", err)
+			return 0, false, 0, fmt.Errorf("insert signal during candle commit: %w", err)
+		}
+		if enqueue && signalInserted {
+			deliveriesEnqueued, err = enqueueSignalForEligibleUsers(ctx, tx, signalID)
+			if err != nil {
+				return 0, false, 0, fmt.Errorf("enqueue signal deliveries during candle commit: %w", err)
+			}
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return 0, false, fmt.Errorf("commit closed candle: %w", err)
+		return 0, false, 0, fmt.Errorf("commit closed candle: %w", err)
 	}
-	return signalID, signalInserted, nil
+	return signalID, signalInserted, deliveriesEnqueued, nil
 }
 
 // EnqueueSignalForEligibleUsers creates deliveries for users whose saved filters accept this event.
 func (r *Repository) EnqueueSignalForEligibleUsers(ctx context.Context, signalID int64) (int64, error) {
+	return enqueueSignalForEligibleUsers(ctx, r.pool, signalID)
+}
+
+type signalDeliveryExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func enqueueSignalForEligibleUsers(ctx context.Context, executor signalDeliveryExecer, signalID int64) (int64, error) {
 	if signalID <= 0 {
 		return 0, fmt.Errorf("%w: signal ID must be positive", ErrInvalidInput)
 	}
-	tag, err := r.pool.Exec(ctx, `
+	tag, err := executor.Exec(ctx, `
 		WITH selected_signal AS (
 			SELECT id, symbol, timeframe, direction
 			FROM signals

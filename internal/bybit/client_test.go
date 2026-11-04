@@ -166,3 +166,35 @@ func TestNewClientAndKlineParametersAreValidated(t *testing.T) {
 		t.Fatal("oversized kline limit must fail")
 	}
 }
+
+func TestGetKlinesAtReusesProvidedServerTime(t *testing.T) {
+	serverTime := time.Date(2026, 11, 4, 12, 7, 30, 0, time.UTC)
+	start := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).UnixMilli()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v5/market/time" {
+			t.Fatal("GetKlinesAt must not request exchange time again")
+		}
+		if r.URL.Path != "/v5/market/kline" {
+			t.Fatalf("unexpected endpoint %s", r.URL.Path)
+		}
+		writeResult(w, map[string]any{"list": [][]string{
+			{strconv.FormatInt(start, 10), "100", "102", "99", "101", "10", "1000"},
+		}})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candles, err := client.GetKlinesAt(context.Background(), "BTCUSDT", "5", 100, serverTime)
+	if err != nil {
+		t.Fatalf("GetKlinesAt() error = %v", err)
+	}
+	if len(candles) != 1 || candles[0].ClosePrice != 101 {
+		t.Fatalf("unexpected candles: %+v", candles)
+	}
+	if _, err := client.GetKlinesAt(context.Background(), "BTCUSDT", "5", 100, time.Time{}); err == nil {
+		t.Fatal("empty exchange time must be rejected")
+	}
+}
