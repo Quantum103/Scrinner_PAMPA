@@ -18,15 +18,15 @@ import (
 
 const (
 	maxResponseBytes = 8 << 20
-	maxAttempts = 3
-	requestInterval = 100 * time.Millisecond
+	maxAttempts      = 3
+	requestInterval  = 100 * time.Millisecond
 )
 
 // Client reads public market data only. It has no private or trading endpoints.
 type Client struct {
-	baseURL string
-	httpClient *http.Client
-	rateMu sync.Mutex
+	baseURL     string
+	httpClient  *http.Client
+	rateMu      sync.Mutex
 	nextRequest time.Time
 }
 
@@ -47,8 +47,8 @@ func NewClient(baseURL string, httpClient *http.Client) (*Client, error) {
 
 type APIError struct {
 	HTTPStatus int
-	Code int64
-	Message string
+	Code       int64
+	Message    string
 }
 
 func (e *APIError) Error() string {
@@ -64,31 +64,31 @@ func (e *APIError) temporary() bool {
 }
 
 type Instrument struct {
-	Symbol string
-	BaseCoin string
-	QuoteCoin string
-	SettleCoin string
+	Symbol       string
+	BaseCoin     string
+	QuoteCoin    string
+	SettleCoin   string
 	ContractType string
-	Status string
+	Status       string
 }
 
 type Ticker struct {
-	Symbol string
-	LastPrice string
+	Symbol      string
+	LastPrice   string
 	Turnover24h string
 }
 
 type Candle struct {
-	Symbol string
-	Timeframe string
-	Start time.Time
-	Close time.Time
-	Open float64
-	High float64
-	Low float64
+	Symbol     string
+	Timeframe  string
+	Start      time.Time
+	Close      time.Time
+	Open       float64
+	High       float64
+	Low        float64
 	ClosePrice float64
-	Volume float64
-	Turnover float64
+	Volume     float64
+	Turnover   float64
 }
 
 // GetInstruments walks the complete cursor-paginated Trading catalogue and keeps
@@ -103,21 +103,21 @@ func (c *Client) GetInstruments(ctx context.Context) ([]Instrument, error) {
 	for page := 0; page < maxPages; page++ {
 		query := url.Values{
 			"category": {"linear"},
-			"status": {"Trading"},
-			"limit": {"1000"},
+			"status":   {"Trading"},
+			"limit":    {"1000"},
 		}
 		if cursor != "" {
 			query.Set("cursor", cursor)
 		}
 		var response struct {
 			NextPageCursor string
-			List []struct {
-				Symbol string
-				BaseCoin string
-				QuoteCoin string
-				SettleCoin string
+			List           []struct {
+				Symbol       string
+				BaseCoin     string
+				QuoteCoin    string
+				SettleCoin   string
 				ContractType string
-				Status string
+				Status       string
 			}
 		}
 		if err := c.get(ctx, "/v5/market/instruments-info", query, &response); err != nil {
@@ -159,8 +159,8 @@ func (c *Client) GetTickers(ctx context.Context) ([]Ticker, error) {
 	query := url.Values{"category": {"linear"}}
 	var response struct {
 		List []struct {
-			Symbol string
-			LastPrice string
+			Symbol      string
+			LastPrice   string
 			Turnover24h string
 		}
 	}
@@ -189,7 +189,7 @@ func (c *Client) GetTickers(ctx context.Context) ([]Ticker, error) {
 func (c *Client) GetServerTime(ctx context.Context) (time.Time, error) {
 	var response struct {
 		TimeSecond string
-		TimeNano string
+		TimeNano   string
 	}
 	if err := c.get(ctx, "/v5/market/time", nil, &response); err != nil {
 		return time.Time{}, fmt.Errorf("get Bybit server time: %w", err)
@@ -356,8 +356,8 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, destina
 		}
 		var envelope struct {
 			RetCode int64
-			RetMsg string
-			Result json.RawMessage
+			RetMsg  string
+			Result  json.RawMessage
 		}
 		if err := json.Unmarshal(body, &envelope); err != nil {
 			return fmt.Errorf("decode Bybit response envelope: %w", err)

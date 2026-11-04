@@ -18,11 +18,11 @@ import (
 )
 
 type App struct {
-	pool      *pgxpool.Pool
-	storage   *storage.Repository
-	server    *http.Server
-	logger    *slog.Logger
-	config    config.Config
+	pool       *pgxpool.Pool
+	storage    *storage.Repository
+	server     *http.Server
+	logger     *slog.Logger
+	config     config.Config
 	marketSync *market.Synchronizer
 }
 

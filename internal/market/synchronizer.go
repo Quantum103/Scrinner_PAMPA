@@ -22,13 +22,13 @@ type InstrumentRepository interface {
 
 type SyncStats struct {
 	Instruments int
-	WithTicker int
+	WithTicker  int
 }
 
 type Synchronizer struct {
-	source MarketDataSource
+	source     MarketDataSource
 	repository InstrumentRepository
-	now func() time.Time
+	now        func() time.Time
 }
 
 func NewSynchronizer(source MarketDataSource, repository InstrumentRepository) (*Synchronizer, error) {
