@@ -198,19 +198,22 @@ func TestSignalDeduplicationDeliveryRetryAndUserHistory(t *testing.T) {
 	symbol := createTestInstrument(t, repository)
 	start := time.Now().UTC().Truncate(time.Minute).Add(-time.Minute)
 	signal := Signal{
-		Symbol:      symbol,
-		Timeframe:   "5",
-		Direction:   "LONG",
-		CandleStart: start,
-		CandleClose: start.Add(5 * time.Minute),
-		ClosePrice:  12.345,
-		RSI:         56.82,
-		EMARSI:      54.31,
-		MarketRegime: "SIDEWAYS",
-		MarketADX: 17.8, MarketADXReady: true,
-		MarketCHOP: 65.3, MarketCHOPReady: true,
-		MarketEMA: 12.25, MarketEMAReady: true,
-		DetectedAt:  time.Now().UTC(),
+		Symbol:         symbol,
+		Timeframe:      "5",
+		Direction:      "LONG",
+		CandleStart:    start,
+		CandleClose:    start.Add(5 * time.Minute),
+		ClosePrice:     12.345,
+		RSI:             56.82,
+		EMARSI:          54.31,
+		MarketRegime:    "SIDEWAYS",
+		MarketADX:       17.8,
+		MarketADXReady:  true,
+		MarketCHOP:      65.3,
+		MarketCHOPReady: true,
+		MarketEMA:       12.25,
+		MarketEMAReady:  true,
+		DetectedAt:      time.Now().UTC(),
 	}
 
 	signalID, inserted, err := repository.SaveSignal(ctx, signal)

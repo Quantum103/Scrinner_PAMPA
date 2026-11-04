@@ -65,13 +65,13 @@ type Signal struct {
 	RSI         float64
 	EMARSI      float64
 
-	MarketRegime   string
-	MarketADX      float64
-	MarketADXReady bool
-	MarketCHOP     float64
+	MarketRegime    string
+	MarketADX       float64
+	MarketADXReady  bool
+	MarketCHOP      float64
 	MarketCHOPReady bool
-	MarketEMA      float64
-	MarketEMAReady bool
+	MarketEMA       float64
+	MarketEMAReady  bool
 
 	DetectedAt time.Time
 }
@@ -108,13 +108,13 @@ type Delivery struct {
 	RSI          float64
 	EMARSI       float64
 
-	MarketRegime   string
-	MarketADX      float64
-	MarketADXReady bool
-	MarketCHOP     float64
+	MarketRegime    string
+	MarketADX       float64
+	MarketADXReady  bool
+	MarketCHOP      float64
 	MarketCHOPReady bool
-	MarketEMA      float64
-	MarketEMAReady bool
+	MarketEMA       float64
+	MarketEMAReady  bool
 
 	DetectedAt time.Time
 }

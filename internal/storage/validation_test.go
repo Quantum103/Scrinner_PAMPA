@@ -46,18 +46,21 @@ func TestValidateSettings(t *testing.T) {
 func TestValidateSignal(t *testing.T) {
 	now := time.Now().UTC()
 	valid := Signal{
-		Symbol:      "BTCUSDT",
-		Timeframe:   "30",
-		Direction:   "LONG",
-		CandleStart: now,
-		CandleClose: now.Add(30 * time.Minute),
-		ClosePrice:  100,
-		RSI:         50,
-		EMARSI:      48,
-		MarketRegime: "SIDEWAYS",
-		MarketADX: 17.8, MarketADXReady: true,
-		MarketCHOP: 65.3, MarketCHOPReady: true,
-		MarketEMA: 99.5, MarketEMAReady: true,
+		Symbol:         "BTCUSDT",
+		Timeframe:      "30",
+		Direction:      "LONG",
+		CandleStart:    now,
+		CandleClose:    now.Add(30 * time.Minute),
+		ClosePrice:     100,
+		RSI:             50,
+		EMARSI:          48,
+		MarketRegime:    "SIDEWAYS",
+		MarketADX:       17.8,
+		MarketADXReady:  true,
+		MarketCHOP:      65.3,
+		MarketCHOPReady: true,
+		MarketEMA:       99.5,
+		MarketEMAReady:  true,
 	}
 	if err := validateSignal(valid); err != nil {
 		t.Fatalf("valid signal rejected: %v", err)
