@@ -314,7 +314,7 @@ func (s *Scanner) scanProfileWorkloadsLocked(ctx context.Context, workloads []st
 	var scanErrors []error
 	for _, key := range keys {
 		pair := pairs[key]
-		maxHistory := s.settings.HistoryCandles
+		maxHistory := minimumMarketHistory(s.settings.HistoryCandles)
 		profiles := make([]storage.ScannerProfile, 0, len(pair.profiles))
 		for profile := range pair.profiles {
 			profiles = append(profiles, profile)
@@ -342,11 +342,16 @@ func (s *Scanner) scanProfileWorkloadsLocked(ctx context.Context, workloads []st
 		if len(closed) > maxHistory {
 			closed = closed[len(closed)-maxHistory:]
 		}
+		marketPoints, err := calculateMarketPoints(closed)
+		if err != nil {
+			scanErrors = append(scanErrors, fmt.Errorf("%s %s: calculate market indicators: %w", pair.symbol, pair.timeframe, err))
+			continue
+		}
 		s.history[key] = closed
 		report.PairsScanned++
 
 		for _, profile := range profiles {
-			pairReport, err := s.processProfilePairCandlesLocked(ctx, pair.symbol, pair.timeframe, profile, closed)
+			pairReport, err := s.processProfilePairCandlesLocked(ctx, pair.symbol, pair.timeframe, profile, closed, marketPoints)
 			if err != nil {
 				scanErrors = append(scanErrors, fmt.Errorf("%s %s RSI(%d)/EMA(%d): %w",
 					pair.symbol, pair.timeframe, profile.RSILength, profile.EMALength, err))
@@ -412,7 +417,8 @@ func (s *Scanner) processLegacyClosedCandleLocked(ctx context.Context, candle by
 		return Report{PairsScanned: 1}, nil
 	}
 
-	needsBackfill := len(history) < s.settings.RSILength+s.settings.EMALength
+	historyLimit := minimumMarketHistory(s.settings.HistoryCandles)
+	needsBackfill := len(history) < historyLimit
 	if len(history) > 0 {
 		interval, _ := timeframeDuration(candle.Timeframe)
 		needsBackfill = needsBackfill || candle.Start.After(history[len(history)-1].Start.Add(interval))
@@ -422,7 +428,7 @@ func (s *Scanner) processLegacyClosedCandleLocked(ctx context.Context, candle by
 		if err != nil {
 			return Report{}, fmt.Errorf("get exchange time for WebSocket gap recovery: %w", err)
 		}
-		recovered, err := s.source.GetKlinesAt(ctx, symbol, candle.Timeframe, s.settings.HistoryCandles, serverTime)
+		recovered, err := s.source.GetKlinesAt(ctx, symbol, candle.Timeframe, historyLimit, serverTime)
 		if err != nil {
 			return Report{}, fmt.Errorf("backfill %s %s after WebSocket gap: %w", symbol, candle.Timeframe, err)
 		}
@@ -435,8 +441,8 @@ func (s *Scanner) processLegacyClosedCandleLocked(ctx context.Context, candle by
 		history = mergeCandles(history, []bybit.Candle{candle})
 	}
 
-	if len(history) > s.settings.HistoryCandles {
-		history = history[len(history)-s.settings.HistoryCandles:]
+	if len(history) > historyLimit {
+		history = history[len(history)-historyLimit:]
 	}
 	pairReport, err := s.processPairCandlesLocked(ctx, symbol, candle.Timeframe, history)
 	report := Report{PairsScanned: 1}
@@ -465,7 +471,7 @@ func (s *Scanner) processProfileClosedCandleLocked(
 	}
 	candle = closed[0]
 
-	maxHistory := s.settings.HistoryCandles
+	maxHistory := minimumMarketHistory(s.settings.HistoryCandles)
 	for _, profile := range profiles {
 		if profile.RSILength < 2 || profile.RSILength > 500 ||
 			profile.EMALength < 1 || profile.EMALength > 500 ||
@@ -505,6 +511,10 @@ func (s *Scanner) processProfileClosedCandleLocked(
 	if len(history) > maxHistory {
 		history = history[len(history)-maxHistory:]
 	}
+	marketPoints, err := calculateMarketPoints(history)
+	if err != nil {
+		return Report{}, fmt.Errorf("calculate personalized market indicators: %w", err)
+	}
 	s.history[key] = history
 
 	report := Report{PairsScanned: 1}
@@ -515,7 +525,7 @@ func (s *Scanner) processProfileClosedCandleLocked(
 			continue
 		}
 		seen[profile] = struct{}{}
-		pairReport, err := s.processProfilePairCandlesLocked(ctx, symbol, candle.Timeframe, profile, history)
+		pairReport, err := s.processProfilePairCandlesLocked(ctx, symbol, candle.Timeframe, profile, history, marketPoints)
 		if err != nil {
 			scanErrors = append(scanErrors, fmt.Errorf("RSI(%d)/EMA(%d): %w", profile.RSILength, profile.EMALength, err))
 			continue
@@ -529,9 +539,13 @@ func (s *Scanner) processProfileClosedCandleLocked(
 
 func (s *Scanner) processProfilePairCandlesLocked(
 	ctx context.Context, symbol, timeframe string, profile storage.ScannerProfile, closed []bybit.Candle,
+	marketPoints []indicators.MarketPoint,
 ) (pairReport, error) {
 	if len(closed) == 0 {
 		return pairReport{}, nil
+	}
+	if len(marketPoints) != len(closed) {
+		return pairReport{}, errors.New("market indicator points do not match closed candle history")
 	}
 	closes := make([]float64, len(closed))
 	for index, candle := range closed {
@@ -610,6 +624,7 @@ func (s *Scanner) processProfilePairCandlesLocked(
 				RSILength: profile.RSILength, EMALength: profile.EMALength,
 				DetectedAt: s.now().UTC(),
 			}
+			applyMarketContext(signal, marketPoints, index)
 		}
 		signalID, inserted, queued, err := s.profileRepository.CommitScannerProfileCandle(ctx, next, signal)
 		if errors.Is(err, storage.ErrStaleCandle) {
@@ -642,7 +657,7 @@ type pairReport struct {
 }
 
 func (s *Scanner) scanPairLocked(ctx context.Context, symbol, timeframe string, serverTime time.Time) (pairReport, error) {
-	candles, err := s.source.GetKlinesAt(ctx, symbol, timeframe, s.settings.HistoryCandles, serverTime)
+	candles, err := s.source.GetKlinesAt(ctx, symbol, timeframe, minimumMarketHistory(s.settings.HistoryCandles), serverTime)
 	if err != nil {
 		return pairReport{}, fmt.Errorf("load closed candles: %w", err)
 	}
@@ -658,11 +673,16 @@ func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timefram
 		return pairReport{}, nil
 	}
 	closed = append([]bybit.Candle(nil), closed...)
-	if len(closed) > s.settings.HistoryCandles {
-		closed = closed[len(closed)-s.settings.HistoryCandles:]
+	historyLimit := minimumMarketHistory(s.settings.HistoryCandles)
+	if len(closed) > historyLimit {
+		closed = closed[len(closed)-historyLimit:]
 	}
 	s.history[historyKey(symbol, timeframe)] = closed
 
+	marketPoints, err := calculateMarketPoints(closed)
+	if err != nil {
+		return pairReport{}, fmt.Errorf("calculate market indicators: %w", err)
+	}
 	closes := make([]float64, len(closed))
 	for index, candle := range closed {
 		closes[index] = candle.ClosePrice
@@ -748,6 +768,7 @@ func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timefram
 				EMARSI:      point.EMARSI,
 				DetectedAt:  s.now().UTC(),
 			}
+			applyMarketContext(signal, marketPoints, index)
 		}
 
 		signalID, inserted, queued, err := s.repository.CommitScannedCandle(ctx, next, signal)
