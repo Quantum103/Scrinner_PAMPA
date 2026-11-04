@@ -371,3 +371,58 @@ func TestPersonalizedScannerFiltersSidewaysCrossAndAdvancesCursor(t *testing.T) 
 		t.Fatalf("personalized filtered crossover was not recorded in cursor: %+v", state)
 	}
 }
+
+func TestPersonalizedWebSocketFiltersSidewaysCrossAndReportsIt(t *testing.T) {
+	start := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	prefix := makeSidewaysCrossoverCandles(52, start)
+	serverTime := prefix[len(prefix)-1].Close
+	source := &fakeSource{
+		serverTime: serverTime,
+		candles:    map[string][]bybit.Candle{pairKey("BTCUSDT", "5"): prefix},
+	}
+	repository := newProfileFakeRepository([]storage.ScannerWorkload{
+		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	})
+	service, err := New(source, repository, Settings{
+		Timeframes: []string{"5"}, RSILength: 3, EMALength: 2,
+		InstrumentLimit: 10, HistoryCandles: 20,
+	})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	service.now = func() time.Time { return serverTime }
+
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("baseline personalized scan: %v", err)
+	}
+
+	full := makeSidewaysCrossoverCandles(53, start)
+	lastCandle := full[len(full)-1]
+	source.serverTime = lastCandle.Close
+	source.candles[pairKey("BTCUSDT", "5")] = full
+
+	report, err := service.ProcessClosedCandle(context.Background(), lastCandle)
+	if err != nil {
+		t.Fatalf("personalized WebSocket sideways crossover: %v", err)
+	}
+	if report.SidewaysSignalsFiltered != 1 || report.SignalsInserted != 0 ||
+		report.DeliveriesQueued != 0 || len(repository.signals) != 0 {
+		t.Fatalf("personalized WebSocket sideways cross was not reported as filtered: report=%+v signals=%+v",
+			report, repository.signals)
+	}
+	state := repository.states[profileStateKey("BTCUSDT", "5", 3, 2)]
+	if !state.LastProcessedCandleStart.Equal(lastCandle.Start) {
+		t.Fatalf("personalized WebSocket cursor did not advance: %+v", state)
+	}
+	if state.LastCrossDirection != "LONG" || state.LastCrossAt == nil {
+		t.Fatalf("personalized WebSocket filtered cross was not recorded in cursor: %+v", state)
+	}
+
+	replay, err := service.ProcessClosedCandle(context.Background(), lastCandle)
+	if err != nil {
+		t.Fatalf("replay personalized WebSocket sideways crossover: %v", err)
+	}
+	if replay.SidewaysSignalsFiltered != 0 || replay.SignalsInserted != 0 {
+		t.Fatalf("personalized WebSocket replay counted the filtered cross again: %+v", replay)
+	}
+}

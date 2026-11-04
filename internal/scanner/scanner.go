@@ -578,6 +578,7 @@ func (s *Scanner) processProfileClosedCandleLocked(
 		}
 		report.CandlesProcessed += pairReport.CandlesProcessed
 		report.SignalsInserted += pairReport.SignalsInserted
+		report.SidewaysSignalsFiltered += pairReport.SidewaysSignalsFiltered
 		report.DeliveriesQueued += pairReport.DeliveriesQueued
 	}
 	return report, errors.Join(scanErrors...)
