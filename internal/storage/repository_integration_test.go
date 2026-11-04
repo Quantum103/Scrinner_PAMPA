@@ -48,7 +48,7 @@ func testRepository(t *testing.T) (*Repository, *pgxpool.Pool) {
 }
 
 func uniqueSuffix() string {
-	return fmt.Sprintf("%x", time.Now().UnixNano())
+	return fmt.Sprintf("%X", time.Now().UnixNano())
 }
 
 func createTestUser(t *testing.T, repository *Repository) TelegramUser {
@@ -420,3 +420,4 @@ func TestEnqueueSignalForEligibleUsersAppliesUserFilters(t *testing.T) {
 		t.Fatalf("signal was delivered to users outside saved filters: %+v", claimed)
 	}
 }
+

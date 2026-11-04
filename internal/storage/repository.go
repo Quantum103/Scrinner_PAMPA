@@ -131,14 +131,6 @@ func (r *Repository) GetOrCreateUserSettings(ctx context.Context, userID int64) 
 	`, userID); err != nil {
 		return UserSettings{}, fmt.Errorf("ensure user settings: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO user_timeframes (user_id, timeframe)
-		VALUES ($1, '5'), ($1, '15'), ($1, '60')
-		ON CONFLICT (user_id, timeframe) DO NOTHING
-	`, userID); err != nil {
-		return UserSettings{}, fmt.Errorf("ensure user timeframes: %w", err)
-	}
-
 	settings, err := scanSettings(ctx, tx, userID)
 	if err != nil {
 		return UserSettings{}, err
@@ -267,7 +259,7 @@ func (r *Repository) UpsertInstrument(ctx context.Context, instrument Instrument
 		return err
 	}
 	if _, err := r.pool.Exec(ctx, instrumentUpsertSQL,
-		instrument.Symbol, instrument.BaseCoin, instrument.QuoteCoin, instrument.SettleCoin,
+		strings.ToUpper(instrument.Symbol), instrument.BaseCoin, instrument.QuoteCoin, instrument.SettleCoin,
 		instrument.ContractType, instrument.Status, instrument.Status == "Trading",
 		instrument.Turnover24h, instrument.LastPrice, nullableTime(instrument.TickerUpdatedAt)); err != nil {
 		return fmt.Errorf("upsert instrument %s: %w", instrument.Symbol, err)
@@ -293,7 +285,7 @@ func (r *Repository) SyncInstrumentCatalog(ctx context.Context, instruments []In
 	}
 	for _, instrument := range instruments {
 		if _, err := tx.Exec(ctx, instrumentUpsertSQL,
-			instrument.Symbol, instrument.BaseCoin, instrument.QuoteCoin, instrument.SettleCoin,
+			strings.ToUpper(instrument.Symbol), instrument.BaseCoin, instrument.QuoteCoin, instrument.SettleCoin,
 			instrument.ContractType, instrument.Status, instrument.Status == "Trading",
 			instrument.Turnover24h, instrument.LastPrice, nullableTime(instrument.TickerUpdatedAt)); err != nil {
 			return fmt.Errorf("upsert instrument %s: %w", instrument.Symbol, err)
