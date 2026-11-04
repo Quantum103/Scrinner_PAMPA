@@ -94,7 +94,7 @@ func TestCalculateMarketIndicatorsFallingTrendHasHighADX(t *testing.T) {
 	for index := range candles {
 		closePrice := 220 - float64(index)
 		candles[index] = OHLC{
-			High: closePrice + 0.25,
+			High:  closePrice + 0.25,
 			Low:  closePrice - 0.25,
 			Close: closePrice,
 		}
@@ -206,7 +206,7 @@ func trendingMarketCandles(count int) []OHLC {
 	for index := range candles {
 		closePrice := 100 + float64(index)
 		candles[index] = OHLC{
-			High: closePrice + 0.25,
+			High:  closePrice + 0.25,
 			Low:  closePrice - 0.25,
 			Close: closePrice,
 		}
@@ -222,7 +222,7 @@ func sidewaysMarketCandles(count int) []OHLC {
 			closePrice = 100.2
 		}
 		candles[index] = OHLC{
-			High: closePrice + 0.5,
+			High:  closePrice + 0.5,
 			Low:  closePrice - 0.5,
 			Close: closePrice,
 		}
