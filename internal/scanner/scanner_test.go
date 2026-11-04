@@ -586,8 +586,8 @@ func TestPersonalizedWebSocketCandleIsProfileAwareAndDeduplicated(t *testing.T) 
 	if replay.SignalsInserted != 0 || len(repository.signals) != 1 {
 		t.Fatalf("replayed personalized WebSocket candle duplicated signal: report=%+v signals=%+v", replay, repository.signals)
 	}
-	if source.calls != 2 {
-		t.Fatalf("expected one initial REST fetch and one WebSocket gap backfill, calls=%d", source.calls)
+	if source.calls != 1 {
+		t.Fatalf("contiguous personalized WebSocket candle must reuse cached history, calls=%d", source.calls)
 	}
 	if repository.profilePairLookups != 0 || repository.activeUserChecks != 0 {
 		t.Fatalf("WebSocket hot path queried profile routing in PostgreSQL: pair_lookups=%d active_user_checks=%d",

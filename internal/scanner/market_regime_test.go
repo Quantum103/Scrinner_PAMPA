@@ -126,19 +126,16 @@ func TestApplyMarketContextCopiesSnapshotIntoSignal(t *testing.T) {
 }
 
 func regimeCrossoverCloses() []float64 {
-	const count = 78
+	const count = 53
 	closes := make([]float64, count)
 	for index := range closes {
-		closes[index] = 100 + 0.5*float64(index) + 0.8*math.Sin(float64(index)*0.6)
+		closes[index] = 100 + float64(index)
 	}
 
-	// A short pullback followed by a strong recovery creates a final LONG
-	// RSI/EMA-RSI cross while the broader market remains in an established uptrend.
-	closes[count-6] = closes[count-7] - 2
-	closes[count-5] = closes[count-6] - 2
-	closes[count-4] = closes[count-5] - 1.5
-	closes[count-3] = closes[count-4] + 0.4
-	closes[count-2] = closes[count-3] + 2
+	// Keep the long-term market trend intact, pull RSI below its EMA RSI,
+	// then create a LONG cross on the first candle after the 52-candle warm-up.
+	closes[count-3] = closes[count-4] - 2
+	closes[count-2] = closes[count-3] - 1.5
 	closes[count-1] = closes[count-2] + 3
 	return closes
 }
@@ -164,7 +161,7 @@ func assertSignalHasUptrendContext(t *testing.T, signal storage.Signal) {
 
 func TestLegacyScannerAttachesMarketContextToRSISignal(t *testing.T) {
 	closes := regimeCrossoverCloses()
-	prefix := closes[:len(closes)-3]
+	prefix := closes[:len(closes)-1]
 	service, source, repository, start := newScannerForTest(t, prefix)
 
 	if _, err := service.ScanOnce(context.Background()); err != nil {
