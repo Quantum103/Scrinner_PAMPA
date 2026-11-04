@@ -16,9 +16,9 @@ const (
 	marketRegimeWindow  = 3
 	marketRegimeConfirm = 2
 
-	marketADXSidewaysMax = 20.0
+	marketADXSidewaysMax  = 20.0
 	marketCHOPSidewaysMin = 61.8
-	marketADXTrendMin = 25.0
+	marketADXTrendMin     = 25.0
 )
 
 const (
