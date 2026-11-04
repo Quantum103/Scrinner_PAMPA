@@ -35,10 +35,10 @@ func (f *fakeSource) GetKlinesAt(_ context.Context, symbol, timeframe string, li
 
 type fakeRepository struct {
 	instruments []storage.Instrument
-	states     map[string]storage.ScannerState
-	signals    []storage.Signal
-	deliveries int64
-	commits    int
+	states      map[string]storage.ScannerState
+	signals     []storage.Signal
+	deliveries  int64
+	commits     int
 }
 
 func newFakeRepository() *fakeRepository {
