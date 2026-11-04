@@ -28,7 +28,6 @@ type Repository interface {
 
 type ProfileRepository interface {
 	ListScannerWorkloads(context.Context) ([]storage.ScannerWorkload, error)
-	ListScannerProfilesForPair(context.Context, string, string) ([]storage.ScannerProfile, error)
 	HasActiveScannerUsers(context.Context) (bool, error)
 	GetScannerProfileState(context.Context, string, string, int, int) (storage.ScannerProfileState, error)
 	InitializeScannerProfileState(context.Context, storage.ScannerProfileState) (storage.ScannerProfileState, bool, error)
@@ -62,6 +61,11 @@ type Scanner struct {
 	// events cannot advance the same durable cursor concurrently.
 	mu      sync.Mutex
 	history map[string][]bybit.Candle
+
+	// Active profile routing is refreshed together with REST reconciliation.
+	// WebSocket candle handling must not issue profile-discovery SQL per event.
+	profilePairs           map[string][]storage.ScannerProfile
+	hasActiveProfileUsers  bool
 }
 
 func New(source MarketDataSource, repository Repository, settings Settings) (*Scanner, error) {
@@ -79,6 +83,7 @@ func New(source MarketDataSource, repository Repository, settings Settings) (*Sc
 	return &Scanner{
 		source: source, repository: repository, profileRepository: profileRepository, settings: settings,
 		now: time.Now, history: make(map[string][]bybit.Candle),
+		profilePairs: make(map[string][]storage.ScannerProfile),
 	}, nil
 }
 
@@ -122,11 +127,73 @@ func (s *Scanner) ScanOnce(ctx context.Context) (Report, error) {
 		if err != nil {
 			return Report{}, fmt.Errorf("list personalized scanner workloads: %w", err)
 		}
+		hasUsers := len(workloads) > 0
+		if !hasUsers {
+			hasUsers, err = s.profileRepository.HasActiveScannerUsers(ctx)
+			if err != nil {
+				return Report{}, fmt.Errorf("check active personalized scanner users: %w", err)
+			}
+		}
+		if err := s.refreshProfileCacheLocked(workloads, hasUsers); err != nil {
+			return Report{}, fmt.Errorf("refresh personalized scanner profile cache: %w", err)
+		}
 		if len(workloads) > 0 {
 			return s.scanProfileWorkloadsLocked(ctx, workloads)
 		}
+		if hasUsers {
+			// Active users with an empty selected universe must not fall back to
+			// the global scanner's instrument list.
+			return Report{}, nil
+		}
 	}
 	return s.scanLegacyOnceLocked(ctx)
+}
+
+// refreshProfileCacheLocked builds the immutable routing index used by the
+// WebSocket hot path. It is called under s.mu before the corresponding REST
+// reconciliation so new profiles have their baseline before live events run.
+func (s *Scanner) refreshProfileCacheLocked(workloads []storage.ScannerWorkload, hasUsers bool) error {
+	profileSets := make(map[string]map[storage.ScannerProfile]struct{})
+	for _, workload := range workloads {
+		if _, err := timeframeDuration(workload.Timeframe); err != nil {
+			return err
+		}
+		profile := storage.ScannerProfile{RSILength: workload.RSILength, EMALength: workload.EMALength}
+		if profile.RSILength < 2 || profile.RSILength > 500 ||
+			profile.EMALength < 1 || profile.EMALength > 500 ||
+			profile.RSILength+profile.EMALength > 1000 {
+			return fmt.Errorf("invalid active RSI/EMA profile: RSI=%d EMA=%d", profile.RSILength, profile.EMALength)
+		}
+		for _, rawSymbol := range workload.Symbols {
+			symbol := strings.ToUpper(strings.TrimSpace(rawSymbol))
+			if symbol == "" {
+				return errors.New("personalized scanner workload contains an empty symbol")
+			}
+			key := historyKey(symbol, workload.Timeframe)
+			if profileSets[key] == nil {
+				profileSets[key] = make(map[storage.ScannerProfile]struct{})
+			}
+			profileSets[key][profile] = struct{}{}
+		}
+	}
+
+	profilesByPair := make(map[string][]storage.ScannerProfile, len(profileSets))
+	for key, profileSet := range profileSets {
+		profiles := make([]storage.ScannerProfile, 0, len(profileSet))
+		for profile := range profileSet {
+			profiles = append(profiles, profile)
+		}
+		sort.Slice(profiles, func(i, j int) bool {
+			if profiles[i].RSILength == profiles[j].RSILength {
+				return profiles[i].EMALength < profiles[j].EMALength
+			}
+			return profiles[i].RSILength < profiles[j].RSILength
+		})
+		profilesByPair[key] = profiles
+	}
+	s.profilePairs = profilesByPair
+	s.hasActiveProfileUsers = hasUsers
+	return nil
 }
 
 func (s *Scanner) scanLegacyOnceLocked(ctx context.Context) (Report, error) {
@@ -283,18 +350,18 @@ func (s *Scanner) ProcessClosedCandle(ctx context.Context, candle bybit.Candle) 
 	defer s.mu.Unlock()
 
 	if s.profileRepository != nil {
-		profiles, err := s.profileRepository.ListScannerProfilesForPair(ctx, candle.Symbol, candle.Timeframe)
-		if err != nil {
-			return Report{}, fmt.Errorf("load scanner profiles for confirmed candle: %w", err)
+		symbol := strings.ToUpper(strings.TrimSpace(candle.Symbol))
+		if symbol == "" {
+			return Report{}, errors.New("WebSocket candle symbol is required")
 		}
+		if _, err := timeframeDuration(candle.Timeframe); err != nil {
+			return Report{}, err
+		}
+		profiles := s.profilePairs[historyKey(symbol, candle.Timeframe)]
 		if len(profiles) > 0 {
 			return s.processProfileClosedCandleLocked(ctx, candle, profiles)
 		}
-		hasUsers, err := s.profileRepository.HasActiveScannerUsers(ctx)
-		if err != nil {
-			return Report{}, fmt.Errorf("check active personalized scanner users: %w", err)
-		}
-		if hasUsers {
+		if s.hasActiveProfileUsers {
 			return Report{PairsScanned: 1}, nil
 		}
 	}

@@ -356,8 +356,11 @@ func TestProcessClosedWebSocketCandleBackfillsMissedCandles(t *testing.T) {
 
 type profileFakeRepository struct {
 	*fakeRepository
-	workloads []storage.ScannerWorkload
-	states    map[string]storage.ScannerProfileState
+	workloads          []storage.ScannerWorkload
+	states             map[string]storage.ScannerProfileState
+	profilePairLookups int
+	activeUserChecks   int
+	hasUsers           bool
 }
 
 func newProfileFakeRepository(workloads []storage.ScannerWorkload) *profileFakeRepository {
@@ -377,6 +380,7 @@ func (f *profileFakeRepository) ListScannerWorkloads(context.Context) ([]storage
 }
 
 func (f *profileFakeRepository) ListScannerProfilesForPair(_ context.Context, symbol, timeframe string) ([]storage.ScannerProfile, error) {
+	f.profilePairLookups++
 	profiles := make([]storage.ScannerProfile, 0)
 	for _, workload := range f.workloads {
 		if workload.Timeframe != timeframe {
@@ -393,7 +397,8 @@ func (f *profileFakeRepository) ListScannerProfilesForPair(_ context.Context, sy
 }
 
 func (f *profileFakeRepository) HasActiveScannerUsers(context.Context) (bool, error) {
-	return len(f.workloads) > 0, nil
+	f.activeUserChecks++
+	return f.hasUsers || len(f.workloads) > 0, nil
 }
 
 func (f *profileFakeRepository) GetScannerProfileState(_ context.Context, symbol, timeframe string, rsiLength, emaLength int) (storage.ScannerProfileState, error) {
@@ -583,5 +588,55 @@ func TestPersonalizedWebSocketCandleIsProfileAwareAndDeduplicated(t *testing.T) 
 	}
 	if source.calls != 2 {
 		t.Fatalf("expected one initial REST fetch and one WebSocket gap backfill, calls=%d", source.calls)
+	}
+	if repository.profilePairLookups != 0 || repository.activeUserChecks != 0 {
+		t.Fatalf("WebSocket hot path queried profile routing in PostgreSQL: pair_lookups=%d active_user_checks=%d",
+			repository.profilePairLookups, repository.activeUserChecks)
+	}
+}
+
+func TestPersonalizedScannerRefreshesProfileRoutingCache(t *testing.T) {
+	closes := []float64{100, 101, 102, 103, 102, 101, 100, 99, 98, 99, 100, 101}
+	start := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	serverTime := start.Add(time.Duration(len(closes)) * 5 * time.Minute)
+	source := &fakeSource{
+		serverTime: serverTime,
+		candles: map[string][]bybit.Candle{
+			pairKey("BTCUSDT", "5"): makeCandles("BTCUSDT", "5", closes, start, serverTime),
+		},
+	}
+	repository := newProfileFakeRepository([]storage.ScannerWorkload{
+		{RSILength: 3, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	})
+	service, err := New(source, repository, Settings{
+		Timeframes: []string{"5"}, RSILength: 3, EMALength: 2,
+		InstrumentLimit: 10, HistoryCandles: 20,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("first profile scan: %v", err)
+	}
+	key := historyKey("BTCUSDT", "5")
+	if got := service.profilePairs[key]; len(got) != 1 || got[0] != (storage.ScannerProfile{RSILength: 3, EMALength: 2}) {
+		t.Fatalf("initial cached profile routing = %+v", got)
+	}
+
+	repository.workloads = []storage.ScannerWorkload{
+		{RSILength: 5, EMALength: 2, Timeframe: "5", Symbols: []string{"BTCUSDT"}},
+	}
+	if _, err := service.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("updated profile scan: %v", err)
+	}
+	if got := service.profilePairs[key]; len(got) != 1 || got[0] != (storage.ScannerProfile{RSILength: 5, EMALength: 2}) {
+		t.Fatalf("profile routing cache was not refreshed: %+v", got)
+	}
+	if service.hasActiveProfileUsers != true {
+		t.Fatal("active profile user state was not retained in routing cache")
+	}
+	if repository.profilePairLookups != 0 {
+		t.Fatalf("profile cache refresh unexpectedly used per-pair lookups: %d", repository.profilePairLookups)
 	}
 }
