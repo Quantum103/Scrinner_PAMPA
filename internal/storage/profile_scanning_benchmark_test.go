@@ -108,6 +108,7 @@ func BenchmarkListScannerWorkloads(b *testing.B) {
 			seedWorkloadBenchmarkDB(b, pool, instruments, 30)
 			b.ReportAllocs()
 			b.ResetTimer()
+			b.StartTimer()
 			for iteration := 0; iteration < b.N; iteration++ {
 				workloads, err := repository.ListScannerWorkloads(context.Background())
 				if err != nil {
