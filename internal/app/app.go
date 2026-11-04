@@ -9,18 +9,21 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/config"
+	"github.com/Quantum103/Scrinner_PAMPA/internal/market"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/migrations"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type App struct {
-	pool    *pgxpool.Pool
-	storage *storage.Repository
-	server  *http.Server
-	logger  *slog.Logger
-	config  config.Config
+	pool      *pgxpool.Pool
+	storage   *storage.Repository
+	server    *http.Server
+	logger    *slog.Logger
+	config    config.Config
+	marketSync *market.Synchronizer
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -53,6 +56,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		pool.Close()
 		return nil, fmt.Errorf("initialize PostgreSQL repository: %w", err)
 	}
+	restClient, err := bybit.NewClient(cfg.Bybit.RESTURL, nil)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize Bybit REST client: %w", err)
+	}
+	marketSync, err := market.NewSynchronizer(restClient, repository)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize Bybit market synchronizer: %w", err)
+	}
 
 	server := &http.Server{
 		Addr:              cfg.App.HTTPAddr,
@@ -61,10 +74,17 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		IdleTimeout:       60 * time.Second,
 	}
 
-	return &App{pool: pool, storage: repository, server: server, logger: logger, config: cfg}, nil
+	return &App{
+		pool: pool, storage: repository, server: server, logger: logger,
+		config: cfg, marketSync: marketSync,
+	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go a.runMarketSync(runCtx)
+
 	serverErrors := make(chan error, 1)
 	go func() {
 		a.logger.Info("HTTP health server started", "address", a.config.App.HTTPAddr)
@@ -78,8 +98,8 @@ func (a *App) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), a.config.App.ShutdownTimeout)
-		defer cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), a.config.App.ShutdownTimeout)
+		defer shutdownCancel()
 		if err := a.server.Shutdown(shutdownCtx); err != nil {
 			_ = a.server.Close()
 			return fmt.Errorf("shutdown HTTP server: %w", err)
@@ -90,6 +110,35 @@ func (a *App) Run(ctx context.Context) error {
 			return fmt.Errorf("HTTP server: %w", err)
 		}
 		return nil
+	}
+}
+
+func (a *App) runMarketSync(ctx context.Context) {
+	ticker := time.NewTicker(a.config.Scanner.RefreshInterval)
+	defer ticker.Stop()
+
+	refresh := func() {
+		syncCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		stats, err := a.marketSync.Sync(syncCtx)
+		if err != nil {
+			a.logger.Error("Bybit market catalogue refresh failed", "error", err)
+			return
+		}
+		a.logger.Info("Bybit market catalogue refreshed",
+			"instruments", stats.Instruments,
+			"with_ticker", stats.WithTicker,
+		)
+	}
+
+	refresh()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
 	}
 }
 
