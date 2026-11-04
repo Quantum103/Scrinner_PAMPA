@@ -273,8 +273,11 @@ start:
 			continue
 		}
 		if len(subscriptions) == 0 {
-			a.logger.Warn("Bybit WebSocket has no active kline subscriptions")
-			if !waitForMarketRetry(ctx, marketChanged) {
+			a.logger.Warn("Bybit WebSocket has no active kline subscriptions; waiting for settings refresh")
+			// User settings can change without a market-catalogue notification. Check
+			// again on the regular subscription ticker, but do not poll PostgreSQL
+			// every five seconds while the user's selected universe is empty.
+			if !waitForSubscriptionRefresh(ctx, marketChanged, subscriptionTicker.C) {
 				return
 			}
 			continue
@@ -460,6 +463,17 @@ func waitForMarketRetry(ctx context.Context, marketChanged <-chan struct{}) bool
 	case <-marketChanged:
 		return true
 	case <-timer.C:
+		return true
+	}
+}
+
+func waitForSubscriptionRefresh(ctx context.Context, marketChanged <-chan struct{}, refresh <-chan time.Time) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-marketChanged:
+		return true
+	case <-refresh:
 		return true
 	}
 }
