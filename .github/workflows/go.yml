@@ -37,6 +37,8 @@ jobs:
           cache: true
       - name: Download Go modules
         run: go mod download
+      - name: Diagnose formatting
+        run: gofmt -l ./cmd ./internal
       - name: Verify formatting
         run: test -z "$(gofmt -l ./cmd ./internal)"
       - name: Test (unit and PostgreSQL integration)

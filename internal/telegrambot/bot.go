@@ -480,6 +480,15 @@ func (b *Bot) changeSettings(ctx context.Context, chatID, messageID, userID int6
 		settings.EMALength = 500
 		notice = "EMA не может быть больше 500."
 	}
+	if settings.RSILength+settings.EMALength > 1000 {
+		switch change {
+		case "rsi:+":
+			settings.RSILength = 1000 - settings.EMALength
+		case "ema:+":
+			settings.EMALength = 1000 - settings.RSILength
+		}
+		notice = "Сумма периодов RSI и EMA не может превышать 1000 свечей."
+	}
 	if settings.InstrumentLimit < 1 {
 		settings.InstrumentLimit = 1
 		notice = "Минимальный лимит — 1 инструмент."
