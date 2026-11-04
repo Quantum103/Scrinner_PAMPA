@@ -128,6 +128,10 @@ func (c *apiClient) editMessageText(ctx context.Context, chatID, messageID int64
 	return c.call(ctx, "editMessageText", request, nil)
 }
 
+func (c *apiClient) deleteMessage(ctx context.Context, chatID, messageID int64) error {
+	return c.call(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": messageID}, nil)
+}
+
 func (c *apiClient) answerCallbackQuery(ctx context.Context, callbackID, message string) error {
 	request := map[string]any{"callback_query_id": callbackID}
 	if message != "" {

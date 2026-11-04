@@ -2,24 +2,30 @@ package telegrambot
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Quantum103/Scrinner_PAMPA/internal/storage"
 )
 
 const (
-	pollTimeoutSeconds = 25
-	deliveryBatchSize  = 50
-	deliveryLease      = 2 * time.Minute
+	pollTimeoutSeconds    = 25
+	deliveryBatchSize     = 50
+	deliveryLease         = 2 * time.Minute
+	maxPasswordFailures   = 5
+	passwordFailureWindow = 10 * time.Minute
+	passwordLockout       = 15 * time.Minute
 )
 
 type Repository interface {
 	EnsureTelegramUser(context.Context, storage.TelegramUser) (storage.TelegramUser, error)
+	ActivateTelegramUser(context.Context, int64) error
 	GetUserByTelegramID(context.Context, int64) (storage.TelegramUser, error)
 	GetOrCreateUserSettings(context.Context, int64) (storage.UserSettings, error)
 	UpdateUserSettings(context.Context, storage.UserSettings) error
@@ -27,7 +33,7 @@ type Repository interface {
 	ClearInstrumentPreference(context.Context, int64, string) error
 	ListInstrumentPreferences(context.Context, int64) ([]storage.InstrumentPreference, error)
 	ListUserSignals(context.Context, int64, storage.SignalFilters) ([]storage.Signal, error)
-	ClaimPendingDeliveriesForUsers(context.Context, int, time.Duration, []int64) ([]storage.Delivery, error)
+	ClaimPendingDeliveries(context.Context, int, time.Duration) ([]storage.Delivery, error)
 	MarkDeliverySent(context.Context, int64, int64) error
 	MarkDeliveryFailed(context.Context, int64, int64, time.Time, error) error
 }
@@ -38,52 +44,49 @@ type telegramAPI interface {
 	editMessageText(context.Context, int64, int64, string, *inlineKeyboard) error
 	answerCallbackQuery(context.Context, string, string) error
 	deleteWebhook(context.Context) error
+	deleteMessage(context.Context, int64, int64) error
 	getMe(context.Context) (telegramUser, error)
 	setMyCommands(context.Context) error
 }
 
-type Bot struct {
-	api        telegramAPI
-	repository Repository
-	logger     *slog.Logger
-	allowed    map[int64]struct{}
-	allowedIDs []int64
+type passwordAttempt struct {
+	failures   int
+	windowFrom time.Time
+	lockedTill time.Time
 }
 
-func New(token string, allowedIDs []int64, repository Repository, logger *slog.Logger) (*Bot, error) {
+type Bot struct {
+	api            telegramAPI
+	repository     Repository
+	logger         *slog.Logger
+	accessPassword string
+	authMu         sync.Mutex
+	authAttempts   map[int64]passwordAttempt
+}
+
+func New(token, accessPassword string, repository Repository, logger *slog.Logger) (*Bot, error) {
 	client, err := newAPIClient(token, nil, "")
 	if err != nil {
 		return nil, err
 	}
-	return newWithAPI(client, allowedIDs, repository, logger)
+	return newWithAPI(client, accessPassword, repository, logger)
 }
 
-func newWithAPI(api telegramAPI, allowedIDs []int64, repository Repository, logger *slog.Logger) (*Bot, error) {
+func newWithAPI(api telegramAPI, accessPassword string, repository Repository, logger *slog.Logger) (*Bot, error) {
 	if api == nil {
 		return nil, errors.New("Telegram API client is required")
 	}
 	if repository == nil {
 		return nil, errors.New("Telegram repository is required")
 	}
-	if len(allowedIDs) == 0 {
-		return nil, errors.New("Telegram allowlist must contain at least one user ID")
+	accessPassword = strings.TrimSpace(accessPassword)
+	if len([]rune(accessPassword)) < 12 {
+		return nil, errors.New("Telegram access password must contain at least 12 characters")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	allowed := make(map[int64]struct{}, len(allowedIDs))
-	uniqueIDs := make([]int64, 0, len(allowedIDs))
-	for _, id := range allowedIDs {
-		if id <= 0 {
-			return nil, fmt.Errorf("Telegram allowlist contains invalid user ID %d", id)
-		}
-		if _, exists := allowed[id]; exists {
-			continue
-		}
-		allowed[id] = struct{}{}
-		uniqueIDs = append(uniqueIDs, id)
-	}
-	return &Bot{api: api, repository: repository, logger: logger, allowed: allowed, allowedIDs: uniqueIDs}, nil
+	return &Bot{api: api, repository: repository, logger: logger, accessPassword: accessPassword, authAttempts: make(map[int64]passwordAttempt)}, nil
 }
 
 // Run starts long polling and the persistent signal-delivery worker.
@@ -118,7 +121,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	b.logger.Info("Telegram bot identity verified", "username", me.Username, "telegram_id", me.ID)
 
 	go b.runDeliveryWorker(ctx)
-	b.logger.Info("Telegram bot polling started", "allowed_users", len(b.allowedIDs))
+	b.logger.Info("Telegram bot polling started", "access", "shared-password")
 
 	var offset int64
 	for {
@@ -163,22 +166,24 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegramMessage) error
 	if message == nil || message.From == nil || message.Chat.Type != "private" {
 		return nil
 	}
-	if !b.isAllowed(message.From.ID) {
-		return b.api.sendMessage(ctx, message.Chat.ID,
-			"Доступ к боту не разрешён. Обратитесь к администратору.", nil)
+	user, err := b.repository.GetUserByTelegramID(ctx, message.From.ID)
+	if errors.Is(err, storage.ErrNotFound) || (err == nil && !user.IsActive) {
+		return b.handlePasswordAuthentication(ctx, message)
+	}
+	if err != nil {
+		return fmt.Errorf("load Telegram authorization: %w", err)
 	}
 
-	user, err := b.repository.EnsureTelegramUser(ctx, storage.TelegramUser{
+	user, err = b.repository.EnsureTelegramUser(ctx, storage.TelegramUser{
 		TelegramID: message.From.ID, Username: message.From.Username,
 		FirstName: message.From.FirstName, LastName: message.From.LastName,
 		LanguageCode: message.From.LanguageCode,
 	})
 	if err != nil {
-		return fmt.Errorf("register Telegram user: %w", err)
+		return fmt.Errorf("refresh Telegram user profile: %w", err)
 	}
 	if !user.IsActive {
-		return b.api.sendMessage(ctx, message.Chat.ID,
-			"Ваш доступ отключён администратором.", nil)
+		return b.api.sendMessage(ctx, message.Chat.ID, authPromptText, nil)
 	}
 
 	fields := strings.Fields(strings.TrimSpace(message.Text))
@@ -237,6 +242,91 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegramMessage) error
 	}
 }
 
+func (b *Bot) handlePasswordAuthentication(ctx context.Context, message *telegramMessage) error {
+	password := strings.TrimSpace(message.Text)
+	if password == "" || strings.HasPrefix(password, "/") {
+		return b.api.sendMessage(ctx, message.Chat.ID, authPromptText, nil)
+	}
+
+	deleteCtx, deleteCancel := context.WithTimeout(ctx, 3*time.Second)
+	if err := b.api.deleteMessage(deleteCtx, message.Chat.ID, message.MessageID); err != nil && ctx.Err() == nil {
+		// Never include the supplied text or password in logs.
+		b.logger.Warn("Telegram password message could not be deleted", "telegram_id", message.From.ID, "error", err)
+	}
+	deleteCancel()
+
+	if retryAfter := b.passwordRetryAfter(message.From.ID); retryAfter > 0 {
+		return b.api.sendMessage(ctx, message.Chat.ID, fmt.Sprintf("Слишком много неверных попыток. Повторите через %s.", retryAfter.Round(time.Minute)), nil)
+	}
+
+	if subtle.ConstantTimeCompare([]byte(password), []byte(b.accessPassword)) != 1 {
+		if retryAfter := b.recordPasswordFailure(message.From.ID); retryAfter > 0 {
+			return b.api.sendMessage(ctx, message.Chat.ID, fmt.Sprintf("Слишком много неверных попыток. Доступ к вводу пароля закрыт на %s.", retryAfter.Round(time.Minute)), nil)
+		}
+		return b.api.sendMessage(ctx, message.Chat.ID, "Пароль неверный. Отправьте правильный пароль отдельным сообщением.", nil)
+	}
+
+	b.clearPasswordFailures(message.From.ID)
+	user, err := b.repository.EnsureTelegramUser(ctx, storage.TelegramUser{
+		TelegramID: message.From.ID, Username: message.From.Username,
+		FirstName: message.From.FirstName, LastName: message.From.LastName,
+		LanguageCode: message.From.LanguageCode,
+	})
+	if err != nil {
+		return fmt.Errorf("register Telegram user after password authentication: %w", err)
+	}
+	if !user.IsActive {
+		if err := b.repository.ActivateTelegramUser(ctx, user.TelegramID); err != nil {
+			return fmt.Errorf("activate Telegram user after password authentication: %w", err)
+		}
+		user.IsActive = true
+	}
+	return b.sendMenu(ctx, message.Chat.ID, "Пароль принят. Доступ открыт. Привет, "+displayName(user)+"!")
+}
+
+func (b *Bot) passwordRetryAfter(telegramID int64) time.Duration {
+	b.authMu.Lock()
+	defer b.authMu.Unlock()
+	state, ok := b.authAttempts[telegramID]
+	if !ok {
+		return 0
+	}
+	now := time.Now()
+	if !state.lockedTill.IsZero() && now.Before(state.lockedTill) {
+		return time.Until(state.lockedTill)
+	}
+	if !state.lockedTill.IsZero() || (!state.windowFrom.IsZero() && now.Sub(state.windowFrom) >= passwordFailureWindow) {
+		delete(b.authAttempts, telegramID)
+	}
+	return 0
+}
+
+func (b *Bot) recordPasswordFailure(telegramID int64) time.Duration {
+	b.authMu.Lock()
+	defer b.authMu.Unlock()
+	now := time.Now()
+	state := b.authAttempts[telegramID]
+	if state.windowFrom.IsZero() || now.Sub(state.windowFrom) >= passwordFailureWindow {
+		state = passwordAttempt{windowFrom: now}
+	}
+	state.failures++
+	if state.failures >= maxPasswordFailures {
+		state.lockedTill = now.Add(passwordLockout)
+		state.failures = 0
+	}
+	b.authAttempts[telegramID] = state
+	if !state.lockedTill.IsZero() {
+		return time.Until(state.lockedTill)
+	}
+	return 0
+}
+
+func (b *Bot) clearPasswordFailures(telegramID int64) {
+	b.authMu.Lock()
+	delete(b.authAttempts, telegramID)
+	b.authMu.Unlock()
+}
+
 func (b *Bot) handleCallback(ctx context.Context, callback *telegramCallback) error {
 	if callback == nil {
 		return nil
@@ -247,21 +337,15 @@ func (b *Bot) handleCallback(ctx context.Context, callback *telegramCallback) er
 	if callback.From == nil || callback.Message == nil || callback.Message.Chat.Type != "private" {
 		return nil
 	}
-	if !b.isAllowed(callback.From.ID) {
-		return b.api.sendMessage(ctx, callback.Message.Chat.ID,
-			"Доступ к боту не разрешён. Обратитесь к администратору.", nil)
-	}
 	user, err := b.repository.GetUserByTelegramID(ctx, callback.From.ID)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return b.api.sendMessage(ctx, callback.Message.Chat.ID,
-				startText, nil)
+			return b.api.sendMessage(ctx, callback.Message.Chat.ID, authPromptText, nil)
 		}
 		return fmt.Errorf("load Telegram user for callback: %w", err)
 	}
 	if !user.IsActive {
-		return b.api.sendMessage(ctx, callback.Message.Chat.ID,
-			"Ваш доступ отключён администратором.", nil)
+		return b.api.sendMessage(ctx, callback.Message.Chat.ID, authPromptText, nil)
 	}
 	return b.handleAction(ctx, callback.Message.Chat.ID, callback.Message.MessageID, user.ID, callback.Data)
 }
@@ -554,7 +638,7 @@ func (b *Bot) runDeliveryWorker(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		deliveries, err := b.repository.ClaimPendingDeliveriesForUsers(ctx, deliveryBatchSize, deliveryLease, b.allowedIDs)
+		deliveries, err := b.repository.ClaimPendingDeliveries(ctx, deliveryBatchSize, deliveryLease)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -690,11 +774,6 @@ func validSymbol(value string) bool {
 	return true
 }
 
-func (b *Bot) isAllowed(telegramID int64) bool {
-	_, allowed := b.allowed[telegramID]
-	return allowed
-}
-
 func wait(ctx context.Context, duration time.Duration) bool {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
@@ -707,6 +786,6 @@ func wait(ctx context.Context, duration time.Duration) bool {
 }
 
 const (
-	startText = "Сначала отправьте /start, чтобы зарегистрировать аккаунт."
+	authPromptText = "Для доступа к RSI Scanner отправьте общий пароль отдельным сообщением в этот личный чат. После проверки парольное сообщение будет удалено."
 	helpText  = "RSI Scanner отслеживает пересечения RSI и EMA RSI на закрытых свечах Bybit USDT Perpetual.\n\n/start — главное меню\n/signals — последние сигналы\n/history — история сигналов\n/settings — настройки и фильтры\n/instruments — ручные правила инструментов\n/include BTCUSDT — включить инструмент\n/exclude BTCUSDT — исключить инструмент\n/reset BTCUSDT — удалить правило"
 )

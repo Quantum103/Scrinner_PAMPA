@@ -91,14 +91,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	var telegramBotInstance *telegrambot.Bot
 	switch {
 	case cfg.Telegram.BotToken == "":
-		if len(cfg.Telegram.AllowedUsers) > 0 {
+		if cfg.Telegram.AccessPassword != "" {
 			logger.Warn("Telegram bot is disabled because TELEGRAM_BOT_TOKEN is empty")
 		}
-	case len(cfg.Telegram.AllowedUsers) == 0:
-		logger.Warn("Telegram bot is disabled because TELEGRAM_ALLOWED_USER_IDS is empty")
+	case cfg.Telegram.AccessPassword == "":
+		logger.Warn("Telegram bot is disabled because TELEGRAM_ACCESS_PASSWORD is empty")
 	default:
 		telegramBotInstance, err = telegrambot.New(
-			cfg.Telegram.BotToken, cfg.Telegram.AllowedUsers, repository, logger,
+			cfg.Telegram.BotToken, cfg.Telegram.AccessPassword, repository, logger,
 		)
 		if err != nil {
 			pool.Close()

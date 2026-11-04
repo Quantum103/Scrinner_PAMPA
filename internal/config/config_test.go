@@ -12,7 +12,8 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("SCANNER_TIMEFRAMES", "")
 	t.Setenv("SCANNER_RECONCILE_INTERVAL", "")
 	t.Setenv("SCANNER_SCAN_INTERVAL", "")
-	t.Setenv("TELEGRAM_ALLOWED_USER_IDS", "")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	t.Setenv("TELEGRAM_ACCESS_PASSWORD", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -32,21 +33,23 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadTelegramIDs(t *testing.T) {
-	t.Setenv("TELEGRAM_ALLOWED_USER_IDS", "123, 456,123")
+func TestLoadTelegramAccessPassword(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ACCESS_PASSWORD", "correct-horse-battery-staple")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !reflect.DeepEqual(cfg.Telegram.AllowedUsers, []int64{123, 456}) {
-		t.Fatalf("allowed IDs = %#v", cfg.Telegram.AllowedUsers)
+	if cfg.Telegram.AccessPassword != "correct-horse-battery-staple" {
+		t.Fatal("Telegram access password was not loaded")
 	}
 }
 
-func TestLoadRejectsInvalidTelegramID(t *testing.T) {
-	t.Setenv("TELEGRAM_ALLOWED_USER_IDS", "123,not-a-number")
+func TestLoadRejectsWeakTelegramAccessPassword(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ACCESS_PASSWORD", "short")
 	if _, err := Load(); err == nil {
-		t.Fatal("Load() expected an error for invalid Telegram ID")
+		t.Fatal("Load() expected an error for a short Telegram access password")
 	}
 }
 

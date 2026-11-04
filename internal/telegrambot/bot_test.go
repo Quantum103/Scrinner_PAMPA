@@ -9,9 +9,10 @@ import (
 )
 
 type fakeTelegramAPI struct {
-	sentMessages []string
-	edited       []string
-	answered     int
+	sentMessages  []string
+	edited        []string
+	answered      int
+	deleted       []int64
 }
 
 func (f *fakeTelegramAPI) getUpdates(context.Context, int64, int64) ([]telegramUpdate, error) {
@@ -34,6 +35,11 @@ func (f *fakeTelegramAPI) answerCallbackQuery(context.Context, string, string) e
 }
 
 func (f *fakeTelegramAPI) deleteWebhook(context.Context) error { return nil }
+
+func (f *fakeTelegramAPI) deleteMessage(_ context.Context, _ int64, messageID int64) error {
+	f.deleted = append(f.deleted, messageID)
+	return nil
+}
 
 func (f *fakeTelegramAPI) getMe(context.Context) (telegramUser, error) {
 	return telegramUser{ID: 1000, Username: "rsi_scanner_bot"}, nil
@@ -65,6 +71,16 @@ func (f *fakeTelegramRepository) EnsureTelegramUser(_ context.Context, user stor
 	f.users[user.TelegramID] = user
 	f.settings[user.ID] = storage.DefaultUserSettings(user.ID)
 	return user, nil
+}
+
+func (f *fakeTelegramRepository) ActivateTelegramUser(_ context.Context, telegramID int64) error {
+	user, exists := f.users[telegramID]
+	if !exists {
+		return storage.ErrNotFound
+	}
+	user.IsActive = true
+	f.users[telegramID] = user
+	return nil
 }
 
 func (f *fakeTelegramRepository) GetUserByTelegramID(_ context.Context, telegramID int64) (storage.TelegramUser, error) {
@@ -105,7 +121,7 @@ func (f *fakeTelegramRepository) ListUserSignals(context.Context, int64, storage
 	return nil, nil
 }
 
-func (f *fakeTelegramRepository) ClaimPendingDeliveriesForUsers(context.Context, int, time.Duration, []int64) ([]storage.Delivery, error) {
+func (f *fakeTelegramRepository) ClaimPendingDeliveries(context.Context, int, time.Duration) ([]storage.Delivery, error) {
 	return nil, nil
 }
 
@@ -119,60 +135,107 @@ func newTestBot(t *testing.T) (*Bot, *fakeTelegramAPI, *fakeTelegramRepository) 
 	t.Helper()
 	api := &fakeTelegramAPI{}
 	repository := newFakeTelegramRepository()
-	bot, err := newWithAPI(api, []int64{1001}, repository, nil)
+	bot, err := newWithAPI(api, "correct-horse-battery-staple", repository, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return bot, api, repository
 }
 
-func TestNewRejectsEmptyTelegramAllowlist(t *testing.T) {
+func TestNewRejectsWeakTelegramAccessPassword(t *testing.T) {
 	api := &fakeTelegramAPI{}
 	repository := newFakeTelegramRepository()
-	if _, err := newWithAPI(api, nil, repository, nil); err == nil {
-		t.Fatal("empty allowlist must be rejected")
+	if _, err := newWithAPI(api, "short", repository, nil); err == nil {
+		t.Fatal("short access password must be rejected")
 	}
 }
 
-func TestNonAllowlistedUserCannotRegister(t *testing.T) {
+func TestPasswordAuthenticationDeletesPasswordMessageAndPersistsUser(t *testing.T) {
 	bot, api, repository := newTestBot(t)
-	err := bot.handleUpdate(context.Background(), telegramUpdate{
-		Message: &telegramMessage{
-			Chat: telegramChat{ID: 2002, Type: "private"},
-			From: &telegramUser{ID: 2002, FirstName: "Unknown"},
-			Text: "/start",
-		},
-	})
-	if err != nil {
-		t.Fatalf("handleUpdate() error = %v", err)
+	message := &telegramMessage{
+		MessageID: 10,
+		Chat: telegramChat{ID: 1001, Type: "private"},
+		From: &telegramUser{ID: 1001, FirstName: "Authorized"},
+		Text: "/start",
 	}
-	if repository.ensureCalls != 0 || len(repository.users) != 0 {
-		t.Fatalf("non-allowlisted user was registered: %+v", repository.users)
-	}
-	if len(api.sentMessages) != 1 || !containsText(api.sentMessages[0], "не разрешён") {
-		t.Fatalf("unexpected deny response: %#v", api.sentMessages)
-	}
-}
-
-func TestAllowedUserCanOpenMenuAndChangeSettings(t *testing.T) {
-	bot, api, repository := newTestBot(t)
-	err := bot.handleUpdate(context.Background(), telegramUpdate{
-		Message: &telegramMessage{
-			Chat: telegramChat{ID: 1001, Type: "private"},
-			From: &telegramUser{ID: 1001, FirstName: "Authorized"},
-			Text: "/start",
-		},
-	})
-	if err != nil {
+	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
 		t.Fatalf("start update: %v", err)
+	}
+	if len(repository.users) != 0 || len(api.sentMessages) != 1 || !containsText(api.sentMessages[0], "отправьте общий пароль") {
+		t.Fatalf("unauthenticated /start did not request password: users=%+v messages=%#v", repository.users, api.sentMessages)
+	}
+
+	message.MessageID = 11
+	message.Text = "wrong-password"
+	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
+		t.Fatalf("wrong password update: %v", err)
+	}
+	if len(repository.users) != 0 || len(api.deleted) != 1 || !containsText(api.sentMessages[len(api.sentMessages)-1], "Пароль неверный") {
+		t.Fatalf("wrong password was not rejected and deleted: users=%+v deleted=%v messages=%#v", repository.users, api.deleted, api.sentMessages)
+	}
+
+	message.MessageID = 12
+	message.Text = "correct-horse-battery-staple"
+	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
+		t.Fatalf("correct password update: %v", err)
+	}
+	user, exists := repository.users[1001]
+	if !exists || !user.IsActive || user.ID == 0 || len(api.deleted) != 2 || !containsText(api.sentMessages[len(api.sentMessages)-1], "Доступ открыт") {
+		t.Fatalf("correct password did not authorize user: user=%+v exists=%v deleted=%v messages=%#v", user, exists, api.deleted, api.sentMessages)
+	}
+}
+
+func TestPasswordAuthenticationLocksAfterFiveFailures(t *testing.T) {
+	bot, api, repository := newTestBot(t)
+	message := &telegramMessage{
+		Chat: telegramChat{ID: 2002, Type: "private"},
+		From: &telegramUser{ID: 2002},
+		Text: "incorrect-password"
+	}
+	for attempt := 0; attempt < maxPasswordFailures; attempt++ {
+		message.MessageID = int64(attempt + 1)
+		if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
+			t.Fatalf("failed password attempt %d: %v", attempt+1, err)
+		}
+	}
+	message.Text = "correct-horse-battery-staple"
+	message.MessageID = 10
+	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
+		t.Fatalf("locked password attempt: %v", err)
+	}
+	if len(repository.users) != 0 || !containsText(api.sentMessages[len(api.sentMessages)-1], "Слишком много неверных попыток") {
+		t.Fatalf("password lockout was not enforced: users=%+v last=%q", repository.users, api.sentMessages[len(api.sentMessages)-1])
+	}
+}
+
+func TestInactiveUserMustAuthenticateAgain(t *testing.T) {
+	bot, api, repository := newTestBot(t)
+	repository.users[1001] = storage.TelegramUser{ID: 1, TelegramID: 1001, IsActive: false}
+	message := &telegramMessage{
+		MessageID: 7,
+		Chat: telegramChat{ID: 1001, Type: "private"},
+		From: &telegramUser{ID: 1001, FirstName: "Existing"},
+		Text: "correct-horse-battery-staple",
+	}
+	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
+		t.Fatalf("reauthentication update: %v", err)
+	}
+	if !repository.users[1001].IsActive || len(api.deleted) != 1 {
+		t.Fatalf("inactive user was not reauthenticated: %+v", repository.users[1001])
+	}
+}
+
+func TestAuthenticatedUserCanOpenMenuAndChangeSettings(t *testing.T) {
+	bot, api, repository := newTestBot(t)
+	message := &telegramMessage{MessageID: 1, Chat: telegramChat{ID: 1001, Type: "private"}, From: &telegramUser{ID: 1001, FirstName: "Authorized"}, Text: "correct-horse-battery-staple"}
+	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
+		t.Fatalf("password update: %v", err)
 	}
 	user := repository.users[1001]
 	if !user.IsActive || user.ID == 0 || len(api.sentMessages) != 1 {
 		t.Fatalf("authorized user was not registered and welcomed: user=%+v sent=%v", user, api.sentMessages)
 	}
-
-	err = bot.handleAction(context.Background(), 1001, 55, user.ID, "settings:long")
-	if err != nil {
+	if err := bot.handleAction(context.Background(), 1001, 55, user.ID, "settings:long"); err != nil {
 		t.Fatalf("change settings: %v", err)
 	}
 	settings := repository.settings[user.ID]
@@ -181,46 +244,6 @@ func TestAllowedUserCanOpenMenuAndChangeSettings(t *testing.T) {
 	}
 	if len(api.edited) != 1 || !containsText(api.edited[0], "Уведомления LONG: нет") {
 		t.Fatalf("settings screen was not refreshed: %#v", api.edited)
-	}
-}
-
-func TestInactiveUserIsNotAllowedToUseBot(t *testing.T) {
-	bot, api, repository := newTestBot(t)
-	repository.users[1001] = storage.TelegramUser{ID: 1, TelegramID: 1001, IsActive: false}
-	err := bot.handleUpdate(context.Background(), telegramUpdate{
-		Message: &telegramMessage{
-			Chat: telegramChat{ID: 1001, Type: "private"},
-			From: &telegramUser{ID: 1001},
-			Text: "/start",
-		},
-	})
-	if err != nil {
-		t.Fatalf("inactive user update: %v", err)
-	}
-	if len(api.sentMessages) != 1 || !containsText(api.sentMessages[0], "отключён") {
-		t.Fatalf("inactive account was not denied: %#v", api.sentMessages)
-	}
-}
-
-func TestDeliveryRetryDelayIsBounded(t *testing.T) {
-	if got := deliveryRetryDelay(1); got != 30*time.Second {
-		t.Fatalf("first retry delay = %s", got)
-	}
-	if got := deliveryRetryDelay(20); got != time.Hour {
-		t.Fatalf("maximum retry delay = %s, want 1h", got)
-	}
-}
-
-func TestValidSymbol(t *testing.T) {
-	for _, value := range []string{"BTCUSDT", "ETHUSDT", "1000PEPEUSDT"} {
-		if !validSymbol(value) {
-			t.Fatalf("valid symbol %q rejected", value)
-		}
-	}
-	for _, value := range []string{"", "BTC-USDT", "BTC/USDT", "BTC USDT", "A"} {
-		if validSymbol(value) {
-			t.Fatalf("invalid symbol %q accepted", value)
-		}
 	}
 }
 

@@ -640,3 +640,26 @@ func Test30MinuteSignalsAndScannerStatesPersist(t *testing.T) {
 		t.Fatalf("save 30m signal: inserted=%v error=%v", inserted, err)
 	}
 }
+
+func TestActivateTelegramUser(t *testing.T) {
+	repository, pool := testRepository(t)
+	ctx := context.Background()
+	user := createTestUser(t, repository)
+
+	if _, err := pool.Exec(ctx, `UPDATE telegram_users SET is_active = FALSE WHERE telegram_id = $1`, user.TelegramID); err != nil {
+		t.Fatalf("deactivate test user: %v", err)
+	}
+	if err := repository.ActivateTelegramUser(ctx, user.TelegramID); err != nil {
+		t.Fatalf("activate Telegram user: %v", err)
+	}
+	reloaded, err := repository.GetUserByTelegramID(ctx, user.TelegramID)
+	if err != nil {
+		t.Fatalf("reload Telegram user: %v", err)
+	}
+	if !reloaded.IsActive {
+		t.Fatal("Telegram user was not activated")
+	}
+	if err := repository.ActivateTelegramUser(ctx, 999999999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("activate unknown user error = %v, want ErrNotFound", err)
+	}
+}

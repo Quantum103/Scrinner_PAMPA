@@ -83,6 +83,25 @@ func (r *Repository) EnsureTelegramUser(ctx context.Context, user TelegramUser) 
 	return saved, nil
 }
 
+// ActivateTelegramUser grants access after the shared bot password was verified.
+func (r *Repository) ActivateTelegramUser(ctx context.Context, telegramID int64) error {
+	if telegramID <= 0 {
+		return fmt.Errorf("%w: Telegram ID must be positive", ErrInvalidInput)
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE telegram_users
+		SET is_active = TRUE, updated_at = now(), last_seen_at = now()
+		WHERE telegram_id = $1
+	`, telegramID)
+	if err != nil {
+		return fmt.Errorf("activate Telegram user: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (r *Repository) GetUserByTelegramID(ctx context.Context, telegramID int64) (TelegramUser, error) {
 	var user TelegramUser
 	err := r.pool.QueryRow(ctx, `

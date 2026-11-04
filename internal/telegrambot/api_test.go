@@ -73,3 +73,32 @@ func containsText(value, part string) bool {
 	}
 	return false
 }
+
+func TestTelegramAPIDeleteMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/bottest-token/deleteMessage" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var request struct {
+			ChatID int64 `json:"chat_id"`
+			MessageID int64 `json:"message_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.ChatID != 42 || request.MessageID != 99 {
+			t.Fatalf("unexpected deleteMessage request: %+v", request)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+
+	client, err := newAPIClient("test-token", server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.deleteMessage(context.Background(), 42, 99); err != nil {
+		t.Fatalf("deleteMessage() error = %v", err)
+	}
+}

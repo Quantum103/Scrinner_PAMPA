@@ -46,8 +46,8 @@ type ScannerConfig struct {
 }
 
 type TelegramConfig struct {
-	BotToken     string
-	AllowedUsers []int64
+	BotToken       string
+	AccessPassword string
 }
 
 // Load reads and validates the environment configuration.
@@ -115,10 +115,8 @@ func Load() (Config, error) {
 	if value := strings.TrimSpace(os.Getenv("SCANNER_TIMEFRAMES")); value != "" {
 		cfg.Scanner.Timeframes = splitCSV(value)
 	}
-	if cfg.Telegram.AllowedUsers, err = parseIDs(os.Getenv("TELEGRAM_ALLOWED_USER_IDS")); err != nil {
-		return Config{}, err
-	}
 	cfg.Telegram.BotToken = strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
+	cfg.Telegram.AccessPassword = strings.TrimSpace(os.Getenv("TELEGRAM_ACCESS_PASSWORD"))
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -138,6 +136,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.App.MigrationsDir) == "" {
 		return fmt.Errorf("MIGRATIONS_DIR must not be empty")
+	}
+	if c.Telegram.BotToken != "" && len([]rune(c.Telegram.AccessPassword)) < 12 {
+		return fmt.Errorf("TELEGRAM_ACCESS_PASSWORD must contain at least 12 characters when TELEGRAM_BOT_TOKEN is set")
 	}
 	if !strings.HasPrefix(c.Database.URL, "postgres://") && !strings.HasPrefix(c.Database.URL, "postgresql://") {
 		return fmt.Errorf("DATABASE_URL must use postgres:// or postgresql://")
@@ -235,20 +236,3 @@ func splitCSV(value string) []string {
 	return result
 }
 
-func parseIDs(value string) ([]int64, error) {
-	parts := splitCSV(value)
-	ids := make([]int64, 0, len(parts))
-	seen := make(map[int64]struct{}, len(parts))
-	for _, part := range parts {
-		id, err := strconv.ParseInt(part, 10, 64)
-		if err != nil || id <= 0 {
-			return nil, fmt.Errorf("TELEGRAM_ALLOWED_USER_IDS contains invalid Telegram ID %q", part)
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-	return ids, nil
-}
