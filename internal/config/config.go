@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -36,13 +37,16 @@ type BybitConfig struct {
 }
 
 type ScannerConfig struct {
-	Timeframes      []string
-	RSILength       int
-	EMALength       int
-	InstrumentLimit int
-	RefreshInterval time.Duration
-	ScanInterval    time.Duration
-	HistoryCandles  int
+	Timeframes            []string
+	RSILength             int
+	EMALength             int
+	InstrumentLimit       int
+	RefreshInterval       time.Duration
+	ScanInterval          time.Duration
+	HistoryCandles        int
+	MarketADXSidewaysMax  float64
+	MarketCHOPSidewaysMin float64
+	MarketADXTrendMin     float64
 }
 
 type TelegramConfig struct {
@@ -75,7 +79,10 @@ func Load() (Config, error) {
 			InstrumentLimit: 100,
 			RefreshInterval: 15 * time.Minute,
 			ScanInterval:    time.Hour,
-			HistoryCandles:  300,
+			HistoryCandles:        300,
+			MarketADXSidewaysMax:  20,
+			MarketCHOPSidewaysMin: 61.8,
+			MarketADXTrendMin:     25,
 		},
 	}
 
@@ -110,6 +117,15 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Scanner.HistoryCandles, err = intEnv("SCANNER_HISTORY_CANDLES", cfg.Scanner.HistoryCandles); err != nil {
+		return Config{}, err
+	}
+	if cfg.Scanner.MarketADXSidewaysMax, err = floatEnv("SCANNER_MARKET_ADX_SIDEWAYS_MAX", cfg.Scanner.MarketADXSidewaysMax); err != nil {
+		return Config{}, err
+	}
+	if cfg.Scanner.MarketCHOPSidewaysMin, err = floatEnv("SCANNER_MARKET_CHOP_SIDEWAYS_MIN", cfg.Scanner.MarketCHOPSidewaysMin); err != nil {
+		return Config{}, err
+	}
+	if cfg.Scanner.MarketADXTrendMin, err = floatEnv("SCANNER_MARKET_ADX_TREND_MIN", cfg.Scanner.MarketADXTrendMin); err != nil {
 		return Config{}, err
 	}
 	if value := strings.TrimSpace(os.Getenv("SCANNER_TIMEFRAMES")); value != "" {
@@ -167,6 +183,18 @@ func (c Config) Validate() error {
 	if c.Scanner.HistoryCandles < c.Scanner.RSILength+c.Scanner.EMALength || c.Scanner.HistoryCandles > 1000 {
 		return fmt.Errorf("SCANNER_HISTORY_CANDLES must be between RSI_LENGTH + EMA_LENGTH and 1000")
 	}
+	if !(c.Scanner.MarketADXSidewaysMax > 0 && c.Scanner.MarketADXSidewaysMax < 100) {
+		return fmt.Errorf("SCANNER_MARKET_ADX_SIDEWAYS_MAX must be greater than 0 and less than 100")
+	}
+	if !(c.Scanner.MarketCHOPSidewaysMin > 0 && c.Scanner.MarketCHOPSidewaysMin < 100) {
+		return fmt.Errorf("SCANNER_MARKET_CHOP_SIDEWAYS_MIN must be greater than 0 and less than 100")
+	}
+	if !(c.Scanner.MarketADXTrendMin > 0 && c.Scanner.MarketADXTrendMin < 100) {
+		return fmt.Errorf("SCANNER_MARKET_ADX_TREND_MIN must be greater than 0 and less than 100")
+	}
+	if c.Scanner.MarketADXSidewaysMax >= c.Scanner.MarketADXTrendMin {
+		return fmt.Errorf("SCANNER_MARKET_ADX_SIDEWAYS_MAX must be lower than SCANNER_MARKET_ADX_TREND_MIN")
+	}
 	if len(c.Scanner.Timeframes) == 0 {
 		return fmt.Errorf("at least one scanner timeframe must be enabled")
 	}
@@ -212,6 +240,21 @@ func intEnv(key string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func floatEnv(key string, fallback float64) (float64, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a number: %w", key, err)
+	}
+	if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, fmt.Errorf("%s must be a finite number", key)
 	}
 	return parsed, nil
 }

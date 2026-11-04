@@ -30,6 +30,20 @@ const (
 	marketRegimeTransitional = "TRANSITIONAL"
 )
 
+type marketRegimeThresholds struct {
+	adxSidewaysMax  float64
+	chopSidewaysMin float64
+	adxTrendMin     float64
+}
+
+func defaultMarketRegimeThresholds() marketRegimeThresholds {
+	return marketRegimeThresholds{
+		adxSidewaysMax:  marketADXSidewaysMax,
+		chopSidewaysMin: marketCHOPSidewaysMin,
+		adxTrendMin:     marketADXTrendMin,
+	}
+}
+
 type marketSnapshot struct {
 	regime string
 
@@ -78,8 +92,12 @@ func calculateMarketPoints(candles []bybit.Candle) ([]indicators.MarketPoint, er
 // marketSnapshotAt classifies only information available at index. SIDEWAYS
 // requires two of the latest three candles to satisfy both the ADX and CHOP
 // thresholds. Trend labels require two of the latest three candles to have
-// ADX above 25 and an EMA(50) slope in the same direction.
+// ADX above the configured trend threshold and an EMA(50) slope in the same direction.
 func marketSnapshotAt(points []indicators.MarketPoint, index int) marketSnapshot {
+	return marketSnapshotAtWithThresholds(points, index, defaultMarketRegimeThresholds())
+}
+
+func marketSnapshotAtWithThresholds(points []indicators.MarketPoint, index int, thresholds marketRegimeThresholds) marketSnapshot {
 	snapshot := marketSnapshot{regime: marketRegimeUnknown}
 	if index < 0 || index >= len(points) {
 		return snapshot
@@ -102,11 +120,11 @@ func marketSnapshotAt(points []indicators.MarketPoint, index int) marketSnapshot
 	for candleIndex := start; candleIndex <= index; candleIndex++ {
 		point := points[candleIndex]
 		if point.ADXReady && point.CHOPReady &&
-			point.ADX < marketADXSidewaysMax && point.CHOP > marketCHOPSidewaysMin {
+			point.ADX < thresholds.adxSidewaysMax && point.CHOP > thresholds.chopSidewaysMin {
 			sideways++
 		}
 
-		if candleIndex == 0 || !point.ADXReady || point.ADX <= marketADXTrendMin ||
+		if candleIndex == 0 || !point.ADXReady || point.ADX <= thresholds.adxTrendMin ||
 			!point.EMAReady || !points[candleIndex-1].EMAReady {
 			continue
 		}
@@ -135,10 +153,14 @@ func marketSnapshotAt(points []indicators.MarketPoint, index int) marketSnapshot
 }
 
 func applyMarketContext(signal *storage.Signal, points []indicators.MarketPoint, index int) {
+	applyMarketContextWithThresholds(signal, points, index, defaultMarketRegimeThresholds())
+}
+
+func applyMarketContextWithThresholds(signal *storage.Signal, points []indicators.MarketPoint, index int, thresholds marketRegimeThresholds) {
 	if signal == nil {
 		return
 	}
-	snapshot := marketSnapshotAt(points, index)
+	snapshot := marketSnapshotAtWithThresholds(points, index, thresholds)
 	signal.MarketRegime = snapshot.regime
 	signal.MarketADX = snapshot.adx
 	signal.MarketADXReady = snapshot.adxReady

@@ -47,6 +47,25 @@ func TestMarketSnapshotRequiresTwoOfThreeSidewaysCandles(t *testing.T) {
 	}
 }
 
+func TestMarketSnapshotUsesConfiguredThresholds(t *testing.T) {
+	points := []indicators.MarketPoint{
+		{ADX: 21, ADXReady: true, CHOP: 58, CHOPReady: true, EMA: 100, EMAReady: true},
+		{ADX: 22, ADXReady: true, CHOP: 60, CHOPReady: true, EMA: 101, EMAReady: true},
+		{ADX: 26, ADXReady: true, CHOP: 50, CHOPReady: true, EMA: 102, EMAReady: true},
+	}
+	if got := marketSnapshotAt(points, 2).regime; got != marketRegimeTransitional {
+		t.Fatalf("default thresholds classified market as %s, want %s", got, marketRegimeTransitional)
+	}
+	custom := marketRegimeThresholds{
+		adxSidewaysMax:  23,
+		chopSidewaysMin: 55,
+		adxTrendMin:     30,
+	}
+	if got := marketSnapshotAtWithThresholds(points, 2, custom).regime; got != marketRegimeSideways {
+		t.Fatalf("custom thresholds classified market as %s, want %s", got, marketRegimeSideways)
+	}
+}
+
 func TestMarketSnapshotClassifiesUptrendAndDowntrend(t *testing.T) {
 	tests := []struct {
 		name   string

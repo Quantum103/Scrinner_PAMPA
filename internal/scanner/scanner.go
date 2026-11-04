@@ -35,11 +35,14 @@ type ProfileRepository interface {
 }
 
 type Settings struct {
-	Timeframes      []string
-	RSILength       int
-	EMALength       int
-	InstrumentLimit int
-	HistoryCandles  int
+	Timeframes             []string
+	RSILength              int
+	EMALength              int
+	InstrumentLimit        int
+	HistoryCandles         int
+	MarketADXSidewaysMax   float64
+	MarketCHOPSidewaysMin  float64
+	MarketADXTrendMin      float64
 }
 
 type Report struct {
@@ -76,6 +79,7 @@ func New(source MarketDataSource, repository Repository, settings Settings) (*Sc
 	if repository == nil {
 		return nil, errors.New("scanner repository is required")
 	}
+	settings = withMarketRegimeDefaults(settings)
 	if err := validateSettings(settings); err != nil {
 		return nil, err
 	}
@@ -86,6 +90,27 @@ func New(source MarketDataSource, repository Repository, settings Settings) (*Sc
 		now: time.Now, history: make(map[string][]bybit.Candle),
 		profilePairs: make(map[string][]storage.ScannerProfile),
 	}, nil
+}
+
+func withMarketRegimeDefaults(settings Settings) Settings {
+	if settings.MarketADXSidewaysMax == 0 {
+		settings.MarketADXSidewaysMax = marketADXSidewaysMax
+	}
+	if settings.MarketCHOPSidewaysMin == 0 {
+		settings.MarketCHOPSidewaysMin = marketCHOPSidewaysMin
+	}
+	if settings.MarketADXTrendMin == 0 {
+		settings.MarketADXTrendMin = marketADXTrendMin
+	}
+	return settings
+}
+
+func (s *Scanner) marketRegimeThresholds() marketRegimeThresholds {
+	return marketRegimeThresholds{
+		adxSidewaysMax:  s.settings.MarketADXSidewaysMax,
+		chopSidewaysMin: s.settings.MarketCHOPSidewaysMin,
+		adxTrendMin:     s.settings.MarketADXTrendMin,
+	}
 }
 
 func validateSettings(settings Settings) error {
@@ -100,6 +125,18 @@ func validateSettings(settings Settings) error {
 	}
 	if settings.HistoryCandles < settings.RSILength+settings.EMALength || settings.HistoryCandles > 1000 {
 		return errors.New("scanner history candles must be between RSI length + EMA length and 1000")
+	}
+	if !(settings.MarketADXSidewaysMax > 0 && settings.MarketADXSidewaysMax < 100) {
+		return errors.New("scanner sideways ADX threshold must be greater than 0 and less than 100")
+	}
+	if !(settings.MarketCHOPSidewaysMin > 0 && settings.MarketCHOPSidewaysMin < 100) {
+		return errors.New("scanner sideways CHOP threshold must be greater than 0 and less than 100")
+	}
+	if !(settings.MarketADXTrendMin > 0 && settings.MarketADXTrendMin < 100) {
+		return errors.New("scanner trend ADX threshold must be greater than 0 and less than 100")
+	}
+	if settings.MarketADXSidewaysMax >= settings.MarketADXTrendMin {
+		return errors.New("scanner sideways ADX threshold must be lower than trend ADX threshold")
 	}
 	if len(settings.Timeframes) == 0 {
 		return errors.New("scanner must have at least one timeframe")
@@ -629,7 +666,7 @@ func (s *Scanner) processProfilePairCandlesLocked(
 				RSILength: profile.RSILength, EMALength: profile.EMALength,
 				DetectedAt: s.now().UTC(),
 			}
-			applyMarketContext(signal, marketPoints, index)
+			applyMarketContextWithThresholds(signal, marketPoints, index, s.marketRegimeThresholds())
 			if !marketRegimeAllowsSignal(signal.MarketRegime) {
 				signal = nil
 			}
@@ -776,7 +813,7 @@ func (s *Scanner) processPairCandlesLocked(ctx context.Context, symbol, timefram
 				EMARSI:      point.EMARSI,
 				DetectedAt:  s.now().UTC(),
 			}
-			applyMarketContext(signal, marketPoints, index)
+			applyMarketContextWithThresholds(signal, marketPoints, index, s.marketRegimeThresholds())
 			if !marketRegimeAllowsSignal(signal.MarketRegime) {
 				signal = nil
 			}
