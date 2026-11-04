@@ -88,7 +88,7 @@ func validateSignal(signal Signal) error {
 	if strings.TrimSpace(signal.Symbol) == "" {
 		return fmt.Errorf("%w: signal symbol is required", ErrInvalidInput)
 	}
-	if signal.Timeframe != "5" && signal.Timeframe != "15" && signal.Timeframe != "60" {
+	if signal.Timeframe != "5" && signal.Timeframe != "15" && signal.Timeframe != "30" && signal.Timeframe != "60" {
 		return fmt.Errorf("%w: unsupported signal timeframe %q", ErrInvalidInput, signal.Timeframe)
 	}
 	if signal.Direction != "LONG" && signal.Direction != "SHORT" {

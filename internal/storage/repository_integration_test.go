@@ -95,7 +95,7 @@ func TestEnsureTelegramUserAndPersistSettings(t *testing.T) {
 	if settings.RSILength != 14 || settings.EMALength != 9 || settings.InstrumentLimit != 100 {
 		t.Fatalf("unexpected defaults: %+v", settings)
 	}
-	if len(settings.Timeframes) != 3 || settings.Timeframes[0] != "5" || settings.Timeframes[1] != "15" || settings.Timeframes[2] != "60" {
+	if len(settings.Timeframes) != 1 || settings.Timeframes[0] != "30" {
 		t.Fatalf("unexpected default timeframes: %#v", settings.Timeframes)
 	}
 
@@ -106,7 +106,7 @@ func TestEnsureTelegramUserAndPersistSettings(t *testing.T) {
 	settings.NotifyLong = false
 	settings.NotifyShort = true
 	settings.NotifyConfluence = false
-	settings.Timeframes = []string{"15", "60"}
+	settings.Timeframes = []string{"30"}
 	if err := repository.UpdateUserSettings(ctx, settings); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestEnsureTelegramUserAndPersistSettings(t *testing.T) {
 		!reloaded.ScanAllInstruments || reloaded.NotifyLong || !reloaded.NotifyShort || reloaded.NotifyConfluence {
 		t.Fatalf("settings were not persisted: %+v", reloaded)
 	}
-	if len(reloaded.Timeframes) != 2 || reloaded.Timeframes[0] != "15" || reloaded.Timeframes[1] != "60" {
+	if len(reloaded.Timeframes) != 1 || reloaded.Timeframes[0] != "30" {
 		t.Fatalf("timeframes were not persisted: %#v", reloaded.Timeframes)
 	}
 
@@ -128,7 +128,7 @@ func TestEnsureTelegramUserAndPersistSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get second user's settings: %v", err)
 	}
-	if otherSettings.RSILength != 14 || otherSettings.EMALength != 9 || len(otherSettings.Timeframes) != 3 {
+	if otherSettings.RSILength != 14 || otherSettings.EMALength != 9 || len(otherSettings.Timeframes) != 1 || otherSettings.Timeframes[0] != "30" {
 		t.Fatalf("user settings are not isolated: %+v", otherSettings)
 	}
 }
