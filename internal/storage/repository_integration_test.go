@@ -569,3 +569,41 @@ func TestScannerProfilesHaveIndependentCursorsAndDeliveries(t *testing.T) {
 		t.Fatalf("custom user received wrong profile signal: %+v", got)
 	}
 }
+
+func TestCommitScannerCandleWithoutSignalAdvancesCursorAndRejectsReplay(t *testing.T) {
+	repository, _ := testRepository(t)
+	ctx := context.Background()
+	symbol := createTestInstrument(t, repository)
+	start := time.Now().UTC().Truncate(5 * time.Minute)
+
+	legacy := ScannerState{
+		Symbol: symbol, Timeframe: "5", LastProcessedCandleStart: start,
+		LastClose: 10, LastRSI: 51, LastEMARSI: 50, Initialized: true,
+	}
+	id, inserted, queued, err := repository.CommitScannedCandle(ctx, legacy, nil)
+	if err != nil || id != 0 || inserted || queued != 0 {
+		t.Fatalf("legacy no-signal commit: id=%d inserted=%t queued=%d err=%v", id, inserted, queued, err)
+	}
+	if _, _, _, err := repository.CommitScannedCandle(ctx, legacy, nil); !errors.Is(err, ErrStaleCandle) {
+		t.Fatalf("legacy replay error = %v, want ErrStaleCandle", err)
+	}
+
+	profile := ScannerProfileState{
+		Symbol: symbol, Timeframe: "5", RSILength: 14, EMALength: 9,
+		LastProcessedCandleStart: start, LastClose: 10, LastRSI: 51, LastEMARSI: 50,
+		Initialized: true,
+	}
+	id, inserted, queued, err = repository.CommitScannerProfileCandle(ctx, profile, nil)
+	if err != nil || id != 0 || inserted || queued != 0 {
+		t.Fatalf("profile no-signal commit: id=%d inserted=%t queued=%d err=%v", id, inserted, queued, err)
+	}
+	if _, _, _, err := repository.CommitScannerProfileCandle(ctx, profile, nil); !errors.Is(err, ErrStaleCandle) {
+		t.Fatalf("profile replay error = %v, want ErrStaleCandle", err)
+	}
+	if _, err := repository.GetScannerState(ctx, symbol, "5"); err != nil {
+		t.Fatalf("legacy no-signal cursor was not saved: %v", err)
+	}
+	if _, err := repository.GetScannerProfileState(ctx, symbol, "5", 14, 9); err != nil {
+		t.Fatalf("profile no-signal cursor was not saved: %v", err)
+	}
+}

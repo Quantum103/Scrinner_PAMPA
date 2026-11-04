@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ScannerProfile identifies one indicator configuration.
@@ -289,6 +290,15 @@ func (r *Repository) CommitScannerProfileCandle(
 			rsiLength != state.RSILength || emaLength != state.EMALength {
 			return 0, false, 0, fmt.Errorf("%w: signal does not match the committed profile candle", ErrInvalidInput)
 		}
+	} else {
+		advanced, err := advanceScannerProfileState(ctx, r.pool, state)
+		if err != nil {
+			return 0, false, 0, fmt.Errorf("advance profile cursor without signal: %w", err)
+		}
+		if !advanced {
+			return 0, false, 0, ErrStaleCandle
+		}
+		return 0, false, 0, nil
 	}
 
 	tx, err := r.pool.Begin(ctx)
@@ -297,34 +307,12 @@ func (r *Repository) CommitScannerProfileCandle(
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	var advanced bool
-	err = tx.QueryRow(ctx, `
-		INSERT INTO scanner_profile_states (
-			symbol, timeframe, rsi_length, ema_length, last_processed_candle_start,
-			last_close, last_rsi, last_ema_rsi, last_cross_direction,
-			last_cross_at, initialized
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10, $11)
-		ON CONFLICT (symbol, timeframe, rsi_length, ema_length) DO UPDATE SET
-			last_processed_candle_start = EXCLUDED.last_processed_candle_start,
-			last_close = EXCLUDED.last_close,
-			last_rsi = EXCLUDED.last_rsi,
-			last_ema_rsi = EXCLUDED.last_ema_rsi,
-			last_cross_direction = EXCLUDED.last_cross_direction,
-			last_cross_at = EXCLUDED.last_cross_at,
-			initialized = EXCLUDED.initialized,
-			updated_at = now()
-		WHERE scanner_profile_states.last_processed_candle_start < EXCLUDED.last_processed_candle_start
-		RETURNING TRUE
-	`, strings.ToUpper(strings.TrimSpace(state.Symbol)), state.Timeframe,
-		state.RSILength, state.EMALength, state.LastProcessedCandleStart,
-		state.LastClose, state.LastRSI, state.LastEMARSI, state.LastCrossDirection,
-		nullableTime(state.LastCrossAt), state.Initialized).Scan(&advanced)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, 0, ErrStaleCandle
-	}
+	advanced, err := advanceScannerProfileState(ctx, tx, state)
 	if err != nil {
 		return 0, false, 0, fmt.Errorf("advance scanner profile cursor: %w", err)
+	}
+	if !advanced {
+		return 0, false, 0, ErrStaleCandle
 	}
 
 	var signalID int64
@@ -346,6 +334,38 @@ func (r *Repository) CommitScannerProfileCandle(
 		return 0, false, 0, fmt.Errorf("commit scanner profile candle: %w", err)
 	}
 	return signalID, inserted, queued, nil
+}
+
+type scannerProfileStateExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func advanceScannerProfileState(ctx context.Context, executor scannerProfileStateExecer, state ScannerProfileState) (bool, error) {
+	tag, err := executor.Exec(ctx, `
+		INSERT INTO scanner_profile_states (
+			symbol, timeframe, rsi_length, ema_length, last_processed_candle_start,
+			last_close, last_rsi, last_ema_rsi, last_cross_direction,
+			last_cross_at, initialized
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10, $11)
+		ON CONFLICT (symbol, timeframe, rsi_length, ema_length) DO UPDATE SET
+			last_processed_candle_start = EXCLUDED.last_processed_candle_start,
+			last_close = EXCLUDED.last_close,
+			last_rsi = EXCLUDED.last_rsi,
+			last_ema_rsi = EXCLUDED.last_ema_rsi,
+			last_cross_direction = EXCLUDED.last_cross_direction,
+			last_cross_at = EXCLUDED.last_cross_at,
+			initialized = EXCLUDED.initialized,
+			updated_at = now()
+		WHERE scanner_profile_states.last_processed_candle_start < EXCLUDED.last_processed_candle_start
+	`, strings.ToUpper(strings.TrimSpace(state.Symbol)), state.Timeframe,
+		state.RSILength, state.EMALength, state.LastProcessedCandleStart,
+		state.LastClose, state.LastRSI, state.LastEMARSI, state.LastCrossDirection,
+		nullableTime(state.LastCrossAt), state.Initialized)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // HasActiveScannerUsers differentiates an empty active-user universe from an

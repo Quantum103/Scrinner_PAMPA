@@ -34,31 +34,36 @@ func (r *Repository) SaveSignal(ctx context.Context, signal Signal) (int64, bool
 
 func insertSignal(ctx context.Context, tx pgx.Tx, signal Signal) (int64, bool, error) {
 	rsiLength, emaLength := signalPeriods(signal)
-	tag, err := tx.Exec(ctx, `
+	arguments := []any{
+		strings.ToUpper(signal.Symbol), signal.Timeframe, signal.Direction,
+		signal.CandleStart, signal.CandleClose, signal.ClosePrice, signal.RSI,
+		signal.EMARSI, rsiLength, emaLength, nullableDetectedAt(signal.DetectedAt),
+	}
+	var id int64
+	err := tx.QueryRow(ctx, `
 		INSERT INTO signals (
 			symbol, timeframe, direction, candle_start, candle_close,
 			close_price, rsi, ema_rsi, rsi_length, ema_length, detected_at
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()))
 		ON CONFLICT (symbol, timeframe, candle_start, direction, rsi_length, ema_length) DO NOTHING
-	`, strings.ToUpper(signal.Symbol), signal.Timeframe, signal.Direction,
-		signal.CandleStart, signal.CandleClose, signal.ClosePrice, signal.RSI,
-		signal.EMARSI, rsiLength, emaLength, nullableDetectedAt(signal.DetectedAt))
-	if err != nil {
+		RETURNING id
+	`, arguments...).Scan(&id)
+	if err == nil {
+		return id, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, fmt.Errorf("insert signal %s %s %s: %w", signal.Symbol, signal.Timeframe, signal.Direction, err)
 	}
-	inserted := tag.RowsAffected() == 1
-	var id int64
 	err = tx.QueryRow(ctx, `
 		SELECT id FROM signals
 		WHERE symbol = $1 AND timeframe = $2 AND candle_start = $3 AND direction = $4
 		  AND rsi_length = $5 AND ema_length = $6
-	`, strings.ToUpper(signal.Symbol), signal.Timeframe, signal.CandleStart, signal.Direction,
-		rsiLength, emaLength).Scan(&id)
+	`, arguments[0], arguments[1], arguments[3], arguments[2], arguments[8], arguments[9]).Scan(&id)
 	if err != nil {
 		return 0, false, fmt.Errorf("load saved signal ID: %w", err)
 	}
-	return id, inserted, nil
+	return id, false, nil
 }
 
 func signalPeriods(signal Signal) (int, int) {
@@ -186,6 +191,36 @@ func validateScannerState(state ScannerState) error {
 	return nil
 }
 
+type scannerStateExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func advanceScannerState(ctx context.Context, executor scannerStateExecer, state ScannerState) (bool, error) {
+	tag, err := executor.Exec(ctx, `
+		INSERT INTO scanner_states (
+			symbol, timeframe, last_processed_candle_start, last_close,
+			last_rsi, last_ema_rsi, last_cross_direction, last_cross_at, initialized
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9)
+		ON CONFLICT (symbol, timeframe) DO UPDATE SET
+			last_processed_candle_start = EXCLUDED.last_processed_candle_start,
+			last_close = EXCLUDED.last_close,
+			last_rsi = EXCLUDED.last_rsi,
+			last_ema_rsi = EXCLUDED.last_ema_rsi,
+			last_cross_direction = EXCLUDED.last_cross_direction,
+			last_cross_at = EXCLUDED.last_cross_at,
+			initialized = EXCLUDED.initialized,
+			updated_at = now()
+		WHERE scanner_states.last_processed_candle_start < EXCLUDED.last_processed_candle_start
+	`, strings.ToUpper(state.Symbol), state.Timeframe, state.LastProcessedCandleStart,
+		state.LastClose, state.LastRSI, state.LastEMARSI, state.LastCrossDirection,
+		nullableTime(state.LastCrossAt), state.Initialized)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // CommitClosedCandle advances the scanner cursor and saves an optional signal in one transaction.
 func (r *Repository) CommitClosedCandle(ctx context.Context, state ScannerState, signal *Signal) (int64, bool, error) {
 	signalID, inserted, _, err := r.commitScannedCandle(ctx, state, signal, false)
@@ -212,6 +247,15 @@ func (r *Repository) commitScannedCandle(ctx context.Context, state ScannerState
 			!signal.CandleStart.Equal(state.LastProcessedCandleStart) {
 			return 0, false, 0, fmt.Errorf("%w: signal must belong to the candle being committed", ErrInvalidInput)
 		}
+	} else {
+		advanced, err := advanceScannerState(ctx, r.pool, state)
+		if err != nil {
+			return 0, false, 0, fmt.Errorf("advance scanner cursor without signal: %w", err)
+		}
+		if !advanced {
+			return 0, false, 0, ErrStaleCandle
+		}
+		return 0, false, 0, nil
 	}
 
 	tx, err := r.pool.Begin(ctx)
@@ -220,32 +264,12 @@ func (r *Repository) commitScannedCandle(ctx context.Context, state ScannerState
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	var advanced bool
-	err = tx.QueryRow(ctx, `
-		INSERT INTO scanner_states (
-			symbol, timeframe, last_processed_candle_start, last_close,
-			last_rsi, last_ema_rsi, last_cross_direction, last_cross_at, initialized
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9)
-		ON CONFLICT (symbol, timeframe) DO UPDATE SET
-			last_processed_candle_start = EXCLUDED.last_processed_candle_start,
-			last_close = EXCLUDED.last_close,
-			last_rsi = EXCLUDED.last_rsi,
-			last_ema_rsi = EXCLUDED.last_ema_rsi,
-			last_cross_direction = EXCLUDED.last_cross_direction,
-			last_cross_at = EXCLUDED.last_cross_at,
-			initialized = EXCLUDED.initialized,
-			updated_at = now()
-		WHERE scanner_states.last_processed_candle_start < EXCLUDED.last_processed_candle_start
-		RETURNING TRUE
-	`, strings.ToUpper(state.Symbol), state.Timeframe, state.LastProcessedCandleStart,
-		state.LastClose, state.LastRSI, state.LastEMARSI, state.LastCrossDirection,
-		nullableTime(state.LastCrossAt), state.Initialized).Scan(&advanced)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, 0, ErrStaleCandle
-	}
+	advanced, err := advanceScannerState(ctx, tx, state)
 	if err != nil {
 		return 0, false, 0, fmt.Errorf("advance scanner cursor: %w", err)
+	}
+	if !advanced {
+		return 0, false, 0, ErrStaleCandle
 	}
 
 	var signalID int64
