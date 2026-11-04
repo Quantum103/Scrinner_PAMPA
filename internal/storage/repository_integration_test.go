@@ -180,7 +180,7 @@ func TestInstrumentCatalogAndUserPreferences(t *testing.T) {
 	for _, instrument := range active {
 		if instrument.Symbol == symbol {
 			found = true
-			if instrument.Turnover24h != "500" {
+			if instrument.Turnover24h != "500.00000000" {
 				t.Fatalf("turnover = %s, want 500", instrument.Turnover24h)
 			}
 		}
@@ -420,4 +420,3 @@ func TestEnqueueSignalForEligibleUsersAppliesUserFilters(t *testing.T) {
 		t.Fatalf("signal was delivered to users outside saved filters: %+v", claimed)
 	}
 }
-
