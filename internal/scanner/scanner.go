@@ -46,12 +46,12 @@ type Settings struct {
 }
 
 type Report struct {
-	Instruments              int
-	PairsScanned             int
-	CandlesProcessed         int
-	SignalsInserted          int
-	SidewaysSignalsFiltered  int
-	DeliveriesQueued         int64
+	Instruments             int
+	PairsScanned            int
+	CandlesProcessed        int
+	SignalsInserted         int
+	SidewaysSignalsFiltered int
+	DeliveriesQueued        int64
 }
 
 type Scanner struct {
