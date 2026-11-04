@@ -64,16 +64,16 @@ func seedWorkloadBenchmarkDB(b *testing.B, pool *pgxpool.Pool, instruments, prof
 			symbol, base_coin, quote_coin, settle_coin, contract_type, status,
 			is_active, turnover_24h, last_price
 		)
-		SELECT 'LOAD' || lpad(index::text, 5, '0') || 'USDT', 'LOAD', 'USDT', 'USDT',
-		       'LinearPerpetual', 'Trading', TRUE, (1000000 - index)::numeric, 1
-		FROM generate_series(1, $1) AS index
+		SELECT 'LOAD' || lpad(sequence_number::text, 5, '0') || 'USDT', 'LOAD', 'USDT', 'USDT',
+		       'LinearPerpetual', 'Trading', TRUE, (1000000 - sequence_number)::numeric, 1
+		FROM generate_series(1, $1) AS generated(sequence_number)
 	`, instruments); err != nil {
 		b.Fatalf("seed benchmark instruments: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO telegram_users (telegram_id)
-		SELECT 8000000000000 + index
-		FROM generate_series(1, $1) AS index
+		SELECT 8000000000000 + sequence_number
+		FROM generate_series(1, $1) AS generated(sequence_number)
 	`, profiles); err != nil {
 		b.Fatalf("seed benchmark Telegram users: %v", err)
 	}
