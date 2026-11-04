@@ -715,10 +715,12 @@ func formatSignal(signal storage.Signal) string {
 	if signal.Direction == "SHORT" {
 		direction = "🔴 SHORT"
 	}
-	message := fmt.Sprintf("%s · %s\n%s\nЦена закрытия: %s\nRSI(%d): %.2f · EMA RSI(%d): %.2f\nСвеча закрылась: %s UTC",
-		signal.Timeframe+"m", direction, signal.Symbol, formatPrice(signal.ClosePrice),
-		rsiLength, signal.RSI, emaLength, signal.EMARSI, signal.CandleClose.UTC().Format("2006-01-02 15:04"))
-	return message + formatHigherTimeframeTrend(signal) + formatMarketContext(signal)
+	message := fmt.Sprintf("%s · %s\n%s", signal.Timeframe+"m", direction, signal.Symbol)
+	message += formatHigherTimeframeTrend(signal)
+	message += fmt.Sprintf("\nЦена закрытия: %s\nRSI(%d): %.2f · EMA RSI(%d): %.2f\nСвеча закрылась: %s UTC",
+		formatPrice(signal.ClosePrice), rsiLength, signal.RSI, emaLength, signal.EMARSI,
+		signal.CandleClose.UTC().Format("2006-01-02 15:04"))
+	return message + formatMarketContext(signal)
 }
 
 func formatHigherTimeframeTrend(signal storage.Signal) string {
@@ -737,7 +739,7 @@ func formatHigherTimeframeTrend(signal storage.Signal) string {
 	case "TRANSITIONAL":
 		label = "🔄 ПЕРЕХОДНОЕ СОСТОЯНИЕ"
 	}
-	return fmt.Sprintf("\\nТренд старшего ТФ (%s): %s", timeframe, label)
+	return fmt.Sprintf("\nТренд старшего ТФ (%s): %s", timeframe, label)
 }
 
 func formatMarketContext(signal storage.Signal) string {
