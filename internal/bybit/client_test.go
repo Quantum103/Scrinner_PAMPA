@@ -159,11 +159,41 @@ func TestNewClientAndKlineParametersAreValidated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.GetKlines(context.Background(), "BTCUSDT", "30", 100); err == nil {
+	if _, err := client.GetKlines(context.Background(), "BTCUSDT", "1", 100); err == nil {
 		t.Fatal("unsupported timeframe must fail")
 	}
 	if _, err := client.GetKlines(context.Background(), "BTCUSDT", "5", 1001); err == nil {
 		t.Fatal("oversized kline limit must fail")
+	}
+}
+
+func TestGetKlinesSupports30MinuteInterval(t *testing.T) {
+	serverTime := time.Date(2026, 11, 4, 12, 35, 0, 0, time.UTC)
+	closedStart := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).UnixMilli()
+	openStart := time.Date(2026, 11, 4, 12, 30, 0, 0, time.UTC).UnixMilli()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v5/market/kline" || r.URL.Query().Get("interval") != "30" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		writeResult(w, map[string]any{"list": [][]string{
+			{strconv.FormatInt(openStart, 10), "101", "103", "100", "102", "20", "2000"},
+			{strconv.FormatInt(closedStart, 10), "99", "102", "98", "101", "10", "1000"},
+		}})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candles, err := client.GetKlinesAt(context.Background(), "BTCUSDT", "30", 100, serverTime)
+	if err != nil {
+		t.Fatalf("GetKlinesAt(30) error = %v", err)
+	}
+	if len(candles) != 1 || candles[0].Timeframe != "30" ||
+		candles[0].Start.UnixMilli() != closedStart ||
+		!candles[0].Close.Equal(serverTime.Add(-5*time.Minute)) {
+		t.Fatalf("unexpected 30-minute closed candles: %+v", candles)
 	}
 }
 

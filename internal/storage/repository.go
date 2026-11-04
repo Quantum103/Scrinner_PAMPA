@@ -71,7 +71,7 @@ func (r *Repository) EnsureTelegramUser(ctx context.Context, user TelegramUser) 
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO user_timeframes (user_id, timeframe)
-		VALUES ($1, '5'), ($1, '15'), ($1, '60')
+		VALUES ($1, '30')
 		ON CONFLICT (user_id, timeframe) DO NOTHING
 	`, saved.ID); err != nil {
 		return TelegramUser{}, fmt.Errorf("create default user timeframes: %w", err)
@@ -112,7 +112,7 @@ func DefaultUserSettings(userID int64) UserSettings {
 		NotifyLong:         true,
 		NotifyShort:        true,
 		NotifyConfluence:   true,
-		Timeframes:         []string{"5", "15", "60"},
+		Timeframes:         []string{"30"},
 	}
 }
 
@@ -206,7 +206,7 @@ func scanSettings(ctx context.Context, tx pgx.Tx, userID int64) (UserSettings, e
 	rows, err := tx.Query(ctx, `
 		SELECT timeframe FROM user_timeframes
 		WHERE user_id = $1
-		ORDER BY CASE timeframe WHEN '5' THEN 1 WHEN '15' THEN 2 WHEN '60' THEN 3 END
+		ORDER BY CASE timeframe WHEN '5' THEN 1 WHEN '15' THEN 2 WHEN '30' THEN 3 WHEN '60' THEN 4 END
 	`, userID)
 	if err != nil {
 		return UserSettings{}, fmt.Errorf("read user timeframes: %w", err)
@@ -246,7 +246,7 @@ func validateSettings(settings UserSettings) error {
 	}
 	seen := make(map[string]struct{}, len(settings.Timeframes))
 	for _, timeframe := range settings.Timeframes {
-		if timeframe != "5" && timeframe != "15" && timeframe != "60" {
+		if timeframe != "5" && timeframe != "15" && timeframe != "30" && timeframe != "60" {
 			return fmt.Errorf("%w: unsupported timeframe %q", ErrInvalidInput, timeframe)
 		}
 		if _, ok := seen[timeframe]; ok {

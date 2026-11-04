@@ -833,6 +833,8 @@ func timeframeDuration(timeframe string) (time.Duration, error) {
 		return 5 * time.Minute, nil
 	case "15":
 		return 15 * time.Minute, nil
+	case "30":
+		return 30 * time.Minute, nil
 	case "60":
 		return time.Hour, nil
 	default:

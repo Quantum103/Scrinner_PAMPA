@@ -70,18 +70,19 @@ func TestBuildKlineTopicsValidatesAndDeduplicates(t *testing.T) {
 	got, err := buildKlineTopics([]KlineSubscription{
 		{Symbol: "btcusdt", Timeframe: "5"},
 		{Symbol: "ETHUSDT", Timeframe: "15"},
+		{Symbol: "BTCUSDT", Timeframe: "30"},
 		{Symbol: "BTCUSDT", Timeframe: "5"},
 	})
 	if err != nil {
 		t.Fatalf("buildKlineTopics() error = %v", err)
 	}
-	if len(got) != 2 || got[0] != "kline.15.ETHUSDT" || got[1] != "kline.5.BTCUSDT" {
+	if len(got) != 3 || got[0] != "kline.15.ETHUSDT" || got[1] != "kline.30.BTCUSDT" || got[2] != "kline.5.BTCUSDT" {
 		t.Fatalf("unexpected topics: %#v", got)
 	}
 	if _, err := buildKlineTopics([]KlineSubscription{{Symbol: "BTC-USDT", Timeframe: "5"}}); err == nil {
 		t.Fatal("symbol with a separator must be rejected")
 	}
-	if _, err := buildKlineTopics([]KlineSubscription{{Symbol: "BTCUSDT", Timeframe: "30"}}); err == nil {
+	if _, err := buildKlineTopics([]KlineSubscription{{Symbol: "BTCUSDT", Timeframe: "1"}}); err == nil {
 		t.Fatal("unsupported timeframe must be rejected")
 	}
 }

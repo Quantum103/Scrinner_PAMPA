@@ -254,7 +254,7 @@ func TestNewRejectsInvalidSettings(t *testing.T) {
 		name     string
 		settings Settings
 	}{
-		{name: "unsupported timeframe", settings: Settings{Timeframes: []string{"30"}, RSILength: 14, EMALength: 9, InstrumentLimit: 10, HistoryCandles: 300}},
+		{name: "unsupported timeframe", settings: Settings{Timeframes: []string{"1"}, RSILength: 14, EMALength: 9, InstrumentLimit: 10, HistoryCandles: 300}},
 		{name: "duplicate timeframe", settings: Settings{Timeframes: []string{"5", "5"}, RSILength: 14, EMALength: 9, InstrumentLimit: 10, HistoryCandles: 300}},
 		{name: "too many candles", settings: Settings{Timeframes: []string{"5"}, RSILength: 14, EMALength: 9, InstrumentLimit: 10, HistoryCandles: 1001}},
 	}
@@ -693,5 +693,15 @@ func TestPersonalizedProfileRoutingCacheSortsAndDeduplicates(t *testing.T) {
 				t.Fatalf("%s profiles = %+v, want %+v", symbol, got, want)
 			}
 		}
+	}
+}
+
+func TestNewAccepts30MinuteTimeframe(t *testing.T) {
+	_, err := New(&fakeSource{}, newFakeRepository(), Settings{
+		Timeframes: []string{"30"}, RSILength: 14, EMALength: 9,
+		InstrumentLimit: 10, HistoryCandles: 300,
+	})
+	if err != nil {
+		t.Fatalf("New() rejected 30-minute timeframe: %v", err)
 	}
 }

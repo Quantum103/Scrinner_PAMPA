@@ -304,10 +304,12 @@ func timeframeDuration(timeframe string) (time.Duration, error) {
 		return 5 * time.Minute, nil
 	case "15":
 		return 15 * time.Minute, nil
+	case "30":
+		return 30 * time.Minute, nil
 	case "60":
 		return time.Hour, nil
 	default:
-		return 0, fmt.Errorf("unsupported Bybit timeframe %q: supported values are 5, 15 and 60", timeframe)
+		return 0, fmt.Errorf("unsupported Bybit timeframe %q: supported values are 5, 15, 30 and 60", timeframe)
 	}
 }
 

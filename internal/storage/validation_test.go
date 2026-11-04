@@ -13,7 +13,7 @@ func TestValidateSettings(t *testing.T) {
 		RSILength:       14,
 		EMALength:       9,
 		InstrumentLimit: 100,
-		Timeframes:      []string{"5", "15", "60"},
+		Timeframes:      []string{"5", "15", "30", "60"},
 	}
 	if err := validateSettings(base); err != nil {
 		t.Fatalf("valid settings rejected: %v", err)
@@ -28,7 +28,7 @@ func TestValidateSettings(t *testing.T) {
 		{name: "zero EMA", edit: func(s *UserSettings) { s.EMALength = 0 }},
 		{name: "zero instrument limit", edit: func(s *UserSettings) { s.InstrumentLimit = 0 }},
 		{name: "no timeframes", edit: func(s *UserSettings) { s.Timeframes = nil }},
-		{name: "unsupported timeframe", edit: func(s *UserSettings) { s.Timeframes = []string{"30"} }},
+		{name: "unsupported timeframe", edit: func(s *UserSettings) { s.Timeframes = []string{"1"} }},
 		{name: "duplicate timeframe", edit: func(s *UserSettings) { s.Timeframes = []string{"5", "5"} }},
 	}
 	for _, tt := range tests {
@@ -47,10 +47,10 @@ func TestValidateSignal(t *testing.T) {
 	now := time.Now().UTC()
 	valid := Signal{
 		Symbol:      "BTCUSDT",
-		Timeframe:   "15",
+		Timeframe:   "30",
 		Direction:   "LONG",
 		CandleStart: now,
-		CandleClose: now.Add(15 * time.Minute),
+		CandleClose: now.Add(30 * time.Minute),
 		ClosePrice:  100,
 		RSI:         50,
 		EMARSI:      48,
@@ -62,7 +62,7 @@ func TestValidateSignal(t *testing.T) {
 		name string
 		edit func(*Signal)
 	}{
-		{name: "unknown timeframe", edit: func(s *Signal) { s.Timeframe = "30" }},
+		{name: "unknown timeframe", edit: func(s *Signal) { s.Timeframe = "1" }},
 		{name: "unknown direction", edit: func(s *Signal) { s.Direction = "BUY" }},
 		{name: "open or invalid candle", edit: func(s *Signal) { s.CandleClose = s.CandleStart }},
 		{name: "zero price", edit: func(s *Signal) { s.ClosePrice = 0 }},

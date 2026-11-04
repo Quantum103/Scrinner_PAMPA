@@ -69,7 +69,7 @@ func Load() (Config, error) {
 			PublicWSURL: env("BYBIT_PUBLIC_WS_URL", "wss://stream.bybit.com/v5/public/linear"),
 		},
 		Scanner: ScannerConfig{
-			Timeframes:      []string{"5", "15", "60"},
+			Timeframes:      []string{"30"},
 			RSILength:       14,
 			EMALength:       9,
 			InstrumentLimit: 100,
@@ -171,8 +171,8 @@ func (c Config) Validate() error {
 	}
 	seen := make(map[string]struct{}, len(c.Scanner.Timeframes))
 	for _, timeframe := range c.Scanner.Timeframes {
-		if timeframe != "5" && timeframe != "15" && timeframe != "60" {
-			return fmt.Errorf("unsupported scanner timeframe %q: supported values are 5, 15 and 60", timeframe)
+		if timeframe != "5" && timeframe != "15" && timeframe != "30" && timeframe != "60" {
+			return fmt.Errorf("unsupported scanner timeframe %q: supported values are 5, 15, 30 and 60", timeframe)
 		}
 		if _, ok := seen[timeframe]; ok {
 			return fmt.Errorf("duplicate scanner timeframe %q", timeframe)

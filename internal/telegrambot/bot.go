@@ -363,8 +363,8 @@ func (b *Bot) showSettingsWithUser(ctx context.Context, chatID, messageID, userI
 }
 
 func settingsKeyboard(settings storage.UserSettings) *inlineKeyboard {
-	timeframeButtons := make([]inlineButton, 0, 3)
-	for _, timeframe := range []string{"5", "15", "60"} {
+	timeframeButtons := make([]inlineButton, 0, 4)
+	for _, timeframe := range []string{"5", "15", "30", "60"} {
 		label := timeframe + "m"
 		if containsTimeframe(settings.Timeframes, timeframe) {
 			label = "✅ " + label
@@ -444,7 +444,7 @@ func (b *Bot) changeSettings(ctx context.Context, chatID, messageID, userID int6
 		settings.NotifyLong = !settings.NotifyLong
 	case "short":
 		settings.NotifyShort = !settings.NotifyShort
-	case "tf:5", "tf:15", "tf:60":
+	case "tf:5", "tf:15", "tf:30", "tf:60":
 		timeframe := strings.TrimPrefix(change, "tf:")
 		if containsTimeframe(settings.Timeframes, timeframe) {
 			filtered := make([]string, 0, len(settings.Timeframes)-1)

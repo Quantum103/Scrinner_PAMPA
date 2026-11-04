@@ -27,7 +27,7 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Scanner.ScanInterval != time.Hour {
 		t.Fatalf("reconcile interval = %s, want 1h", cfg.Scanner.ScanInterval)
 	}
-	if !reflect.DeepEqual(cfg.Scanner.Timeframes, []string{"5", "15", "60"}) {
+	if !reflect.DeepEqual(cfg.Scanner.Timeframes, []string{"30"}) {
 		t.Fatalf("timeframes = %#v", cfg.Scanner.Timeframes)
 	}
 }
@@ -50,12 +50,17 @@ func TestLoadRejectsInvalidTelegramID(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsUnsupportedTimeframe(t *testing.T) {
+func TestValidateAccepts30MinuteTimeframe(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	cfg.Scanner.Timeframes = []string{"5", "30"}
+	cfg.Scanner.Timeframes = []string{"30"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected 30-minute timeframe: %v", err)
+	}
+
+	cfg.Scanner.Timeframes = []string{"1"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() expected an error for unsupported timeframe")
 	}

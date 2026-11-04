@@ -223,3 +223,38 @@ func TestValidSymbol(t *testing.T) {
 		}
 	}
 }
+
+func TestAllowedUserCanSelectOnly30MinuteTimeframe(t *testing.T) {
+	bot, api, repository := newTestBot(t)
+	repository.settings[1] = storage.UserSettings{
+		UserID: 1, RSILength: 14, EMALength: 9, InstrumentLimit: 100,
+		NotifyLong: true, NotifyShort: true,
+		Timeframes: []string{"5", "15", "60"},
+	}
+
+	for _, action := range []string{"tf:30", "tf:5", "tf:15", "tf:60"} {
+		if err := bot.changeSettings(context.Background(), 1001, 55, 1, action); err != nil {
+			t.Fatalf("changeSettings(%q): %v", action, err)
+		}
+	}
+	settings := repository.settings[1]
+	if len(settings.Timeframes) != 1 || settings.Timeframes[0] != "30" {
+		t.Fatalf("timeframes = %#v, want only 30m", settings.Timeframes)
+	}
+	if len(api.edited) != 4 || !containsText(api.edited[len(api.edited)-1], "Таймфреймы: 30m") {
+		t.Fatalf("settings screen did not reflect 30m-only selection: %#v", api.edited)
+	}
+
+	keyboard := settingsKeyboard(settings)
+	found := false
+	for _, row := range keyboard.InlineKeyboard {
+		for _, button := range row {
+			if button.CallbackData == "settings:tf:30" && button.Text == "✅ 30m" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("settings keyboard does not show enabled 30m option")
+	}
+}

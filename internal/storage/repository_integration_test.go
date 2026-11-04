@@ -607,3 +607,36 @@ func TestCommitScannerCandleWithoutSignalAdvancesCursorAndRejectsReplay(t *testi
 		t.Fatalf("profile no-signal cursor was not saved: %v", err)
 	}
 }
+
+func Test30MinuteSignalsAndScannerStatesPersist(t *testing.T) {
+	repository, _ := testRepository(t)
+	ctx := context.Background()
+	symbol := createTestInstrument(t, repository)
+	start := time.Now().UTC().Truncate(30 * time.Minute)
+
+	scannerState := ScannerState{
+		Symbol: symbol, Timeframe: "30", LastProcessedCandleStart: start,
+		LastClose: 100, LastRSI: 55, LastEMARSI: 50, Initialized: true,
+	}
+	if _, inserted, err := repository.InitializeScannerState(ctx, scannerState); err != nil || !inserted {
+		t.Fatalf("initialize 30m scanner state: inserted=%v error=%v", inserted, err)
+	}
+
+	profileState := ScannerProfileState{
+		Symbol: symbol, Timeframe: "30", RSILength: 14, EMALength: 9,
+		LastProcessedCandleStart: start, LastClose: 100,
+		LastRSI: 55, LastEMARSI: 50, Initialized: true,
+	}
+	if _, inserted, err := repository.InitializeScannerProfileState(ctx, profileState); err != nil || !inserted {
+		t.Fatalf("initialize 30m profile state: inserted=%v error=%v", inserted, err)
+	}
+
+	signal := Signal{
+		Symbol: symbol, Timeframe: "30", Direction: "LONG",
+		CandleStart: start, CandleClose: start.Add(30 * time.Minute),
+		ClosePrice: 100, RSI: 55, EMARSI: 50, RSILength: 14, EMALength: 9,
+	}
+	if _, inserted, err := repository.SaveSignal(ctx, signal); err != nil || !inserted {
+		t.Fatalf("save 30m signal: inserted=%v error=%v", inserted, err)
+	}
+}

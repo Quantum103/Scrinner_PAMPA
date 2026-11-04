@@ -171,7 +171,7 @@ func validateScannerState(state ScannerState) error {
 	if strings.TrimSpace(state.Symbol) == "" {
 		return fmt.Errorf("%w: scanner state symbol is required", ErrInvalidInput)
 	}
-	if state.Timeframe != "5" && state.Timeframe != "15" && state.Timeframe != "60" {
+	if state.Timeframe != "5" && state.Timeframe != "15" && state.Timeframe != "30" && state.Timeframe != "60" {
 		return fmt.Errorf("%w: unsupported scanner state timeframe %q", ErrInvalidInput, state.Timeframe)
 	}
 	if state.LastProcessedCandleStart.IsZero() {
@@ -531,7 +531,7 @@ func (r *Repository) ListUserSignals(ctx context.Context, userID int64, filters 
 	if filters.Direction != "" && filters.Direction != "LONG" && filters.Direction != "SHORT" {
 		return nil, fmt.Errorf("%w: invalid signal direction", ErrInvalidInput)
 	}
-	if filters.Timeframe != "" && filters.Timeframe != "5" && filters.Timeframe != "15" && filters.Timeframe != "60" {
+	if filters.Timeframe != "" && filters.Timeframe != "5" && filters.Timeframe != "15" && filters.Timeframe != "30" && filters.Timeframe != "60" {
 		return nil, fmt.Errorf("%w: invalid signal timeframe", ErrInvalidInput)
 	}
 

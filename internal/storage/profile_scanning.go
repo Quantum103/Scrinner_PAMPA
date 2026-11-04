@@ -159,7 +159,7 @@ func validateScannerProfileIdentity(symbol, timeframe string, rsiLength, emaLeng
 	if strings.TrimSpace(symbol) == "" {
 		return fmt.Errorf("%w: scanner profile symbol is required", ErrInvalidInput)
 	}
-	if timeframe != "5" && timeframe != "15" && timeframe != "60" {
+	if timeframe != "5" && timeframe != "15" && timeframe != "30" && timeframe != "60" {
 		return fmt.Errorf("%w: unsupported scanner profile timeframe %q", ErrInvalidInput, timeframe)
 	}
 	if rsiLength < 2 || rsiLength > 500 || emaLength < 1 || emaLength > 500 ||
