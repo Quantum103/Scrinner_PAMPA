@@ -354,7 +354,6 @@ func TestProcessClosedWebSocketCandleBackfillsMissedCandles(t *testing.T) {
 	}
 }
 
-
 type profileFakeRepository struct {
 	*fakeRepository
 	workloads []storage.ScannerWorkload
@@ -364,8 +363,8 @@ type profileFakeRepository struct {
 func newProfileFakeRepository(workloads []storage.ScannerWorkload) *profileFakeRepository {
 	return &profileFakeRepository{
 		fakeRepository: newFakeRepository(),
-		workloads: workloads,
-		states: make(map[string]storage.ScannerProfileState),
+		workloads:      workloads,
+		states:         make(map[string]storage.ScannerProfileState),
 	}
 }
 
@@ -428,7 +427,6 @@ func (f *profileFakeRepository) CommitScannerProfileCandle(_ context.Context, st
 	f.deliveries++
 	return int64(len(f.signals)), true, 1, nil
 }
-
 
 func TestPersonalizedScannerSharesMarketFetchButKeepsProfileCursors(t *testing.T) {
 	closes := []float64{100, 101, 102, 103, 102, 101, 100, 99, 98, 99, 100, 101}

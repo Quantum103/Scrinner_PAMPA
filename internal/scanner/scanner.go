@@ -56,7 +56,7 @@ type Scanner struct {
 	repository        Repository
 	profileRepository ProfileRepository
 	settings          Settings
-	now        func() time.Time
+	now               func() time.Time
 
 	// Processing is serialized so REST reconciliation and WebSocket candle
 	// events cannot advance the same durable cursor concurrently.
@@ -467,8 +467,9 @@ func (s *Scanner) processProfilePairCandlesLocked(
 			Symbol: symbol, Timeframe: timeframe,
 			RSILength: profile.RSILength, EMALength: profile.EMALength,
 			LastProcessedCandleStart: closed[last].Start,
-			LastClose: closed[last].ClosePrice,
-			LastRSI: points[last].RSI, LastEMARSI: points[last].EMARSI,
+			LastClose:                closed[last].ClosePrice,
+			LastRSI:                  points[last].RSI,
+			LastEMARSI:               points[last].EMARSI,
 			Initialized: true,
 		}
 		if _, _, err := s.profileRepository.InitializeScannerProfileState(ctx, baseline); err != nil {

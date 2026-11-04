@@ -381,7 +381,7 @@ func (a *App) loadMarketSubscriptions(ctx context.Context) ([]bybit.KlineSubscri
 				continue
 			}
 			unique[key] = bybit.KlineSubscription{
-				Symbol: strings.ToUpper(strings.TrimSpace(symbol)),
+				Symbol:    strings.ToUpper(strings.TrimSpace(symbol)),
 				Timeframe: workload.Timeframe,
 			}
 		}

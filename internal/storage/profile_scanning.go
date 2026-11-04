@@ -348,7 +348,6 @@ func (r *Repository) CommitScannerProfileCandle(
 	return signalID, inserted, queued, nil
 }
 
-
 // HasActiveScannerUsers differentiates an empty active-user universe from an
 // excluded market pair. With no active users the legacy global scanner may run.
 func (r *Repository) HasActiveScannerUsers(ctx context.Context) (bool, error) {
