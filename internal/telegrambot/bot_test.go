@@ -2,6 +2,7 @@ package telegrambot
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -279,5 +280,95 @@ func TestAllowedUserCanSelectOnly30MinuteTimeframe(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("settings keyboard does not show enabled 30m option")
+	}
+}
+
+
+func TestFormatSignalIncludesSidewaysMarketContext(t *testing.T) {
+	message := formatSignal(storage.Signal{
+		Symbol: "BTCUSDT", Timeframe: "30", Direction: "LONG",
+		ClosePrice: 65000, RSI: 32.5, EMARSI: 30.25,
+		MarketRegime: "SIDEWAYS",
+		MarketADX: 18.12, MarketADXReady: true,
+		MarketCHOP: 64.21, MarketCHOPReady: true,
+		MarketEMA: 64950.75, MarketEMAReady: true,
+	})
+
+	for _, expected := range []string{
+		"Рынок: ⚠️ БОКОВОЕ ДВИЖЕНИЕ",
+		"⚠️ Повышенный риск ложных сигналов в боковике.",
+		"ADX(14): 18.12",
+		"CHOP(14): 64.21",
+		"EMA(50): 64950.75",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("formatted signal does not contain %q: %s", expected, message)
+		}
+	}
+}
+
+func TestFormatSignalShowsOnlyReadyMarketMetrics(t *testing.T) {
+	message := formatSignal(storage.Signal{
+		Symbol: "ETHUSDT", Timeframe: "30", Direction: "SHORT",
+		MarketRegime: "TRANSITIONAL",
+		MarketADX: 21.5, MarketADXReady: true,
+	})
+
+	for _, expected := range []string{
+		"Рынок: 🔄 ПЕРЕХОДНОЕ СОСТОЯНИЕ",
+		"ADX(14): 21.50",
+		"CHOP(14): —",
+		"EMA(50): —",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("formatted signal does not contain %q: %s", expected, message)
+		}
+	}
+	if strings.Contains(message, "Недостаточно истории") {
+		t.Fatalf("warmup warning should not replace available metrics: %s", message)
+	}
+}
+
+func TestFormatSignalHandlesUnknownMarketContextWithoutInventingValues(t *testing.T) {
+	message := formatSignal(storage.Signal{
+		Symbol: "XRPUSDT", Timeframe: "30", Direction: "LONG",
+		MarketRegime: "UNKNOWN",
+	})
+
+	for _, expected := range []string{
+		"Рынок: ❔ НЕДОСТАТОЧНО ДАННЫХ",
+		"ADX(14): —",
+		"CHOP(14): —",
+		"EMA(50): —",
+		"Недостаточно истории для расчёта индикаторов.",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("formatted signal does not contain %q: %s", expected, message)
+		}
+	}
+	if strings.Contains(message, "0.00") {
+		t.Fatalf("unavailable metrics must not be formatted as zero: %s", message)
+	}
+}
+
+func TestFormatDeliveryPreservesSidewaysMarketContext(t *testing.T) {
+	message := formatDelivery(storage.Delivery{
+		Symbol: "BTCUSDT", Timeframe: "30", Direction: "SHORT",
+		MarketRegime: "SIDEWAYS",
+		MarketADX: 16.75, MarketADXReady: true,
+		MarketCHOP: 70.1, MarketCHOPReady: true,
+		MarketEMA: 65100, MarketEMAReady: true,
+	})
+
+	for _, expected := range []string{
+		"Новый RSI-сигнал",
+		"Рынок: ⚠️ БОКОВОЕ ДВИЖЕНИЕ",
+		"ADX(14): 16.75",
+		"CHOP(14): 70.10",
+		"EMA(50): 65100",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("formatted delivery does not contain %q: %s", expected, message)
+		}
 	}
 }

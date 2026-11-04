@@ -715,9 +715,46 @@ func formatSignal(signal storage.Signal) string {
 	if signal.Direction == "SHORT" {
 		direction = "🔴 SHORT"
 	}
-	return fmt.Sprintf("%s · %s\n%s\nЦена закрытия: %s\nRSI(%d): %.2f · EMA RSI(%d): %.2f\nСвеча закрылась: %s UTC",
+	message := fmt.Sprintf("%s · %s\n%s\nЦена закрытия: %s\nRSI(%d): %.2f · EMA RSI(%d): %.2f\nСвеча закрылась: %s UTC",
 		signal.Timeframe+"m", direction, signal.Symbol, formatPrice(signal.ClosePrice),
 		rsiLength, signal.RSI, emaLength, signal.EMARSI, signal.CandleClose.UTC().Format("2006-01-02 15:04"))
+	return message + formatMarketContext(signal)
+}
+
+func formatMarketContext(signal storage.Signal) string {
+	regime := strings.ToUpper(strings.TrimSpace(signal.MarketRegime))
+	regimeLabel := "❔ НЕДОСТАТОЧНО ДАННЫХ"
+	warning := ""
+
+	switch regime {
+	case "SIDEWAYS":
+		regimeLabel = "⚠️ БОКОВОЕ ДВИЖЕНИЕ"
+		warning = "\n⚠️ Повышенный риск ложных сигналов в боковике."
+	case "UPTREND":
+		regimeLabel = "📈 ВОСХОДЯЩИЙ ТРЕНД"
+	case "DOWNTREND":
+		regimeLabel = "📉 НИСХОДЯЩИЙ ТРЕНД"
+	case "TRANSITIONAL":
+		regimeLabel = "🔄 ПЕРЕХОДНОЕ СОСТОЯНИЕ"
+	}
+
+	adx, chop, ema := "—", "—", "—"
+	if signal.MarketADXReady {
+		adx = fmt.Sprintf("%.2f", signal.MarketADX)
+	}
+	if signal.MarketCHOPReady {
+		chop = fmt.Sprintf("%.2f", signal.MarketCHOP)
+	}
+	if signal.MarketEMAReady {
+		ema = formatPrice(signal.MarketEMA)
+	}
+
+	message := fmt.Sprintf("\n\nРынок: %s%s\nADX(14): %s · CHOP(14): %s · EMA(50): %s",
+		regimeLabel, warning, adx, chop, ema)
+	if !signal.MarketADXReady && !signal.MarketCHOPReady && !signal.MarketEMAReady {
+		message += "\nНедостаточно истории для расчёта индикаторов."
+	}
+	return message
 }
 
 func formatDelivery(delivery storage.Delivery) string {
