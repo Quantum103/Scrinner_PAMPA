@@ -38,7 +38,7 @@ jobs:
       - name: Download Go modules
         run: go mod download
       - name: Verify formatting
-        run: gofmt -d ./cmd ./internal; gofmt -l ./cmd ./internal; test -z "$(gofmt -l ./cmd ./internal)"
+        run: test -z "$(gofmt -l ./cmd ./internal)"
       - name: Test (unit and PostgreSQL integration)
         run: go test ./...
       - name: Race detector

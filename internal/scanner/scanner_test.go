@@ -13,9 +13,9 @@ import (
 
 type fakeSource struct {
 	serverTime time.Time
-	candles map[string][]bybit.Candle
-	err error
-	calls int
+	candles    map[string][]bybit.Candle
+	err        error
+	calls      int
 }
 
 func (f *fakeSource) GetServerTime(context.Context) (time.Time, error) {
@@ -35,10 +35,10 @@ func (f *fakeSource) GetKlinesAt(_ context.Context, symbol, timeframe string, li
 
 type fakeRepository struct {
 	instruments []storage.Instrument
-	states map[string]storage.ScannerState
-	signals []storage.Signal
+	states     map[string]storage.ScannerState
+	signals    []storage.Signal
 	deliveries int64
-	commits int
+	commits    int
 }
 
 func newFakeRepository() *fakeRepository {
@@ -251,7 +251,7 @@ func TestNewRejectsInvalidSettings(t *testing.T) {
 	source := &fakeSource{}
 	repository := newFakeRepository()
 	tests := []struct {
-		name string
+		name     string
 		settings Settings
 	}{
 		{name: "unsupported timeframe", settings: Settings{Timeframes: []string{"30"}, RSILength: 14, EMALength: 9, InstrumentLimit: 10, HistoryCandles: 300}},
