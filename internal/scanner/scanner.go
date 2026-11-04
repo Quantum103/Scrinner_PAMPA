@@ -418,7 +418,9 @@ func (s *Scanner) processLegacyClosedCandleLocked(ctx context.Context, candle by
 	}
 
 	historyLimit := minimumMarketHistory(s.settings.HistoryCandles)
-	needsBackfill := len(history) < historyLimit
+	// ScanOnce already requested the full available history. Do not repeat the
+	// same REST request on every live candle while a new listing warms up.
+	needsBackfill := len(history) == 0
 	if len(history) > 0 {
 		interval, _ := timeframeDuration(candle.Timeframe)
 		needsBackfill = needsBackfill || candle.Start.After(history[len(history)-1].Start.Add(interval))
@@ -484,7 +486,10 @@ func (s *Scanner) processProfileClosedCandleLocked(
 	}
 	key := historyKey(symbol, candle.Timeframe)
 	history := s.history[key]
-	needsBackfill := len(history) < maxHistory
+	// The REST reconciliation has already requested maxHistory. A short result
+	// means the instrument has fewer available candles, not that each WS event
+	// should trigger another identical backfill.
+	needsBackfill := len(history) == 0
 	if len(history) > 0 {
 		interval, _ := timeframeDuration(candle.Timeframe)
 		if candle.Start.After(history[len(history)-1].Start.Add(interval)) {

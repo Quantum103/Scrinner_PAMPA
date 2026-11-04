@@ -164,7 +164,7 @@ func assertSignalHasUptrendContext(t *testing.T, signal storage.Signal) {
 
 func TestLegacyScannerAttachesMarketContextToRSISignal(t *testing.T) {
 	closes := regimeCrossoverCloses()
-	prefix := closes[:len(closes)-1]
+	prefix := closes[:len(closes)-3]
 	service, source, repository, start := newScannerForTest(t, prefix)
 
 	if _, err := service.ScanOnce(context.Background()); err != nil {
