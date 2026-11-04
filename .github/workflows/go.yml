@@ -38,7 +38,7 @@ jobs:
       - name: Download Go modules
         run: go mod download
       - name: Print formatting diagnostics
-        run: gofmt -l ./cmd ./internal
+        run: gofmt -d ./internal/app/app.go ./internal/bybit/websocket.go ./internal/config/config_test.go ./internal/scanner/scanner.go ./internal/scanner/scanner_test.go
       - name: Verify formatting
         run: test -z "$(gofmt -l ./cmd ./internal)"
       - name: Test (unit and PostgreSQL integration)
