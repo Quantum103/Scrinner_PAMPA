@@ -444,7 +444,7 @@ func TestPersonalizedScannerSharesMarketFetchButKeepsProfileCursors(t *testing.T
 	})
 	repository.instruments = []storage.Instrument{{Symbol: "BTCUSDT"}}
 	service, err := New(source, repository, Settings{
-		Timeframes: []string{"5"}, RSILength: 14, EMALength: 9,
+		Timeframes: []string{"5"}, RSILength: 3, EMALength: 2,
 		InstrumentLimit: 10, HistoryCandles: 20,
 	})
 	if err != nil {
