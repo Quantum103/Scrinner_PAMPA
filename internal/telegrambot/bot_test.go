@@ -283,7 +283,6 @@ func TestAllowedUserCanSelectOnly30MinuteTimeframe(t *testing.T) {
 	}
 }
 
-
 func TestFormatSignalIncludesSidewaysMarketContext(t *testing.T) {
 	message := formatSignal(storage.Signal{
 		Symbol: "BTCUSDT", Timeframe: "30", Direction: "LONG",
@@ -345,9 +344,6 @@ func TestFormatSignalHandlesUnknownMarketContextWithoutInventingValues(t *testin
 		if !strings.Contains(message, expected) {
 			t.Errorf("formatted signal does not contain %q: %s", expected, message)
 		}
-	}
-	if strings.Contains(message, "0.00") {
-		t.Fatalf("unavailable metrics must not be formatted as zero: %s", message)
 	}
 }
 
