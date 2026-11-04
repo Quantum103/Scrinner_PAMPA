@@ -45,7 +45,7 @@ jobs:
             echo "$unformatted"
             while IFS= read -r file; do
               echo "::group::gofmt diff: $file"
-              gofmt -d "$file"
+              gofmt -d "$file" || true
               echo "::endgroup::"
             done <<< "$unformatted"
             exit 1

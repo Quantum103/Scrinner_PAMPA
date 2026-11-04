@@ -97,7 +97,7 @@ func New(source MarketDataSource, repository Repository, settings Settings) (*Sc
 	return &Scanner{
 		source: source, repository: repository, profileRepository: profileRepository, settings: settings,
 		now: time.Now, history: make(map[string][]bybit.Candle),
-		profilePairs: make(map[string][]storage.ScannerProfile),
+		profilePairs:     make(map[string][]storage.ScannerProfile),
 		higherTrendCache: make(map[string]higherTrendCacheEntry),
 	}, nil
 }
@@ -886,7 +886,6 @@ func mergeCandles(first, second []bybit.Candle) []bybit.Candle {
 	sort.Slice(result, func(i, j int) bool { return result[i].Start.Before(result[j].Start) })
 	return result
 }
-
 
 func candleTimeframeDuration(timeframe string) (time.Duration, error) {
 	if timeframe == higherMarketTimeframe {
