@@ -39,11 +39,8 @@ jobs:
         run: go mod download
       - name: Verify formatting
         run: |
-          unformatted="$(gofmt -l ./cmd ./internal)"
-          if [ -n "$unformatted" ]; then
-            printf 'Files requiring gofmt:\n%s\n' "$unformatted"
-            exit 1
-          fi
+          gofmt -d ./cmd ./internal
+          test -z "$(gofmt -l ./cmd ./internal)"
       - name: Test (unit and PostgreSQL integration)
         run: go test ./...
       - name: Race detector
