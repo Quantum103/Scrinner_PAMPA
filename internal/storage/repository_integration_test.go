@@ -198,12 +198,12 @@ func TestSignalDeduplicationDeliveryRetryAndUserHistory(t *testing.T) {
 	symbol := createTestInstrument(t, repository)
 	start := time.Now().UTC().Truncate(time.Minute).Add(-time.Minute)
 	signal := Signal{
-		Symbol:         symbol,
-		Timeframe:      "5",
-		Direction:      "LONG",
-		CandleStart:    start,
-		CandleClose:    start.Add(5 * time.Minute),
-		ClosePrice:     12.345,
+		Symbol:          symbol,
+		Timeframe:       "5",
+		Direction:       "LONG",
+		CandleStart:     start,
+		CandleClose:     start.Add(5 * time.Minute),
+		ClosePrice:      12.345,
 		RSI:             56.82,
 		EMARSI:          54.31,
 		MarketRegime:    "SIDEWAYS",
@@ -337,8 +337,8 @@ func TestScannerStateInitializationAndAtomicCandleCommit(t *testing.T) {
 	start := time.Now().UTC().Truncate(time.Minute).Add(-10 * time.Minute)
 
 	baseline := ScannerState{
-		Symbol:                   symbol,
-		Timeframe:                "5",
+		Symbol:                    symbol,
+		Timeframe:                 "5",
 		LastProcessedCandleStart: start,
 		LastClose:                10,
 		LastRSI:                  48,
@@ -373,13 +373,13 @@ func TestScannerStateInitializationAndAtomicCandleCommit(t *testing.T) {
 		EMARSI:      50,
 	}
 	next := ScannerState{
-		Symbol:                   symbol,
-		Timeframe:                "5",
+		Symbol:                    symbol,
+		Timeframe:                 "5",
 		LastProcessedCandleStart: nextStart,
 		LastClose:                11,
 		LastRSI:                  52,
 		LastEMARSI:               50,
-		LastCrossDirection:       "LONG",
+		LastCrossDirection:        "LONG",
 		LastCrossAt:              &crossAt,
 		Initialized:              true,
 	}

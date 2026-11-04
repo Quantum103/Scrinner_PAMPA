@@ -46,12 +46,12 @@ func TestValidateSettings(t *testing.T) {
 func TestValidateSignal(t *testing.T) {
 	now := time.Now().UTC()
 	valid := Signal{
-		Symbol:         "BTCUSDT",
-		Timeframe:      "30",
-		Direction:      "LONG",
-		CandleStart:    now,
-		CandleClose:    now.Add(30 * time.Minute),
-		ClosePrice:     100,
+		Symbol:          "BTCUSDT",
+		Timeframe:       "30",
+		Direction:       "LONG",
+		CandleStart:     now,
+		CandleClose:     now.Add(30 * time.Minute),
+		ClosePrice:      100,
 		RSI:             50,
 		EMARSI:          48,
 		MarketRegime:    "SIDEWAYS",
@@ -103,8 +103,8 @@ func TestValidateSignal(t *testing.T) {
 func TestValidateScannerState(t *testing.T) {
 	now := time.Now().UTC()
 	state := ScannerState{
-		Symbol:                   "BTCUSDT",
-		Timeframe:                "5",
+		Symbol:                    "BTCUSDT",
+		Timeframe:                 "5",
 		LastProcessedCandleStart: now,
 		LastClose:                100,
 		LastRSI:                  50,
