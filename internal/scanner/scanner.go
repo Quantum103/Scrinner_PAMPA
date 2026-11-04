@@ -470,7 +470,7 @@ func (s *Scanner) processProfilePairCandlesLocked(
 			LastClose:                closed[last].ClosePrice,
 			LastRSI:                  points[last].RSI,
 			LastEMARSI:               points[last].EMARSI,
-			Initialized: true,
+			Initialized:              true,
 		}
 		if _, _, err := s.profileRepository.InitializeScannerProfileState(ctx, baseline); err != nil {
 			return pairReport{}, fmt.Errorf("initialize profile baseline: %w", err)
