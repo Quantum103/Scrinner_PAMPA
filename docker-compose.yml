@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rsi_scanner}
+      POSTGRES_USER: ${POSTGRES_USER:-rsi_scanner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-info}
+      APP_HTTP_ADDR: ${APP_HTTP_ADDR:-:8080}
+      APP_SHUTDOWN_TIMEOUT: ${APP_SHUTDOWN_TIMEOUT:-10s}
+      MIGRATIONS_DIR: /app/migrations
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-rsi_scanner}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rsi_scanner}?sslmode=disable}
+      DB_POOL_MAX_CONNS: ${DB_POOL_MAX_CONNS:-20}
+      DB_POOL_MIN_CONNS: ${DB_POOL_MIN_CONNS:-2}
+      BYBIT_REST_URL: ${BYBIT_REST_URL:-https://api.bykit.com}
+      BYBIT_PUBLIC_WS_URL: ${BYBIT_PUBLIC_WS_URL:-wss://stream.bybit.com/v5/public/linear}
+      SCANNER_TIMEFRAMES: ${SCANNER_TIMEFRAMES:-5,15,60}
+      RSI_LENGTH: ${RSI_LENGTH:-14}
+      EMA_LENGTH: ${EMA_LENGTH:-9}
+      SCANNER_INSTRUMENT_LIMIT: ${SCANNER_INSTRUMENT_LIMIT:-100}
+      SCANNER_REFRESH_INTERVAL: ${SCANNER_REFRESH_INTERVAL:-15m}
+      SCANNER_HISTORY_CANDLES: ${SCANNER_HISTORY_CANDLES:-300}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health/ready"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres_data:

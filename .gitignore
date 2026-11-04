@@ -1,8 +1,10 @@
 .env
 .env.*
 !.env.example
-/bin/
-/dist/
-/logs/
 /data/
 *.log
+coverage.out
+coverage.html
+.DS_Store
+.idea/
+.vscode/

@@ -1,8 +1,15 @@
 module github.com/Quantum103/Scrinner_PAMPA
 
-go 1.23
+go 1.27.0
+
+toolchain go1.27.3
+
+require github.com/jackc/pgx/v5 v5.12.0
 
 require (
-	github.com/gorilla/websocket v1.5.3
-	github.com/mattn/go-sqlite3 v1.14.24
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.3 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 )
