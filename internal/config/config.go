@@ -15,6 +15,7 @@ type Config struct {
 	Database DatabaseConfig
 	Bybit    BybitConfig
 	Scanner  ScannerConfig
+	Spot     SpotConfig
 	Telegram TelegramConfig
 }
 
@@ -32,8 +33,9 @@ type DatabaseConfig struct {
 }
 
 type BybitConfig struct {
-	RESTURL     string
-	PublicWSURL string
+	RESTURL         string
+	PublicWSURL     string
+	SpotPublicWSURL string
 }
 
 type ScannerConfig struct {
@@ -47,6 +49,10 @@ type ScannerConfig struct {
 	MarketADXSidewaysMax  float64
 	MarketCHOPSidewaysMin float64
 	MarketADXTrendMin     float64
+}
+
+type SpotConfig struct {
+	MarketRefreshInterval time.Duration
 }
 
 type TelegramConfig struct {
@@ -71,6 +77,7 @@ func Load() (Config, error) {
 		Bybit: BybitConfig{
 			RESTURL:     env("BYBIT_REST_URL", "https://api.bybit.com"),
 			PublicWSURL: env("BYBIT_PUBLIC_WS_URL", "wss://stream.bybit.com/v5/public/linear"),
+			SpotPublicWSURL: env("BYBIT_PUBLIC_SPOT_WS_URL", "wss://stream.bybit.com/v5/public/spot"),
 		},
 		Scanner: ScannerConfig{
 			Timeframes:            []string{"30"},
@@ -84,10 +91,14 @@ func Load() (Config, error) {
 			MarketCHOPSidewaysMin: 61.8,
 			MarketADXTrendMin:     25,
 		},
+		Spot: SpotConfig{MarketRefreshInterval: time.Minute},
 	}
 
 	var err error
 	if cfg.App.ShutdownTimeout, err = durationEnv("APP_SHUTDOWN_TIMEOUT", cfg.App.ShutdownTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.Spot.MarketRefreshInterval, err = durationEnv("SPOT_MARKET_REFRESH_INTERVAL", cfg.Spot.MarketRefreshInterval); err != nil {
 		return Config{}, err
 	}
 	if cfg.Scanner.RefreshInterval, err = durationEnv("SCANNER_REFRESH_INTERVAL", cfg.Scanner.RefreshInterval); err != nil {
@@ -167,6 +178,12 @@ func (c Config) Validate() error {
 	}
 	if !strings.HasPrefix(c.Bybit.PublicWSURL, "wss://") {
 		return fmt.Errorf("BYBIT_PUBLIC_WS_URL must use wss://")
+	}
+	if !strings.HasPrefix(c.Bybit.SpotPublicWSURL, "wss://") {
+		return fmt.Errorf("BYBIT_PUBLIC_SPOT_WS_URL must use wss://")
+	}
+	if c.Spot.MarketRefreshInterval <= 0 {
+		return fmt.Errorf("SPOT_MARKET_REFRESH_INTERVAL must be positive")
 	}
 	if c.Scanner.RSILength < 2 || c.Scanner.RSILength > 500 || c.Scanner.EMALength < 1 || c.Scanner.EMALength > 500 {
 		return fmt.Errorf("RSI_LENGTH must be 2..500 and EMA_LENGTH must be 1..500")

@@ -14,6 +14,8 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("SCANNER_SCAN_INTERVAL", "")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "")
 	t.Setenv("TELEGRAM_ACCESS_PASSWORD", "")
+	t.Setenv("BYBIT_PUBLIC_SPOT_WS_URL", "")
+	t.Setenv("SPOT_MARKET_REFRESH_INTERVAL", "")
 	t.Setenv("SCANNER_MARKET_ADX_SIDEWAYS_MAX", "")
 	t.Setenv("SCANNER_MARKET_CHOP_SIDEWAYS_MIN", "")
 	t.Setenv("SCANNER_MARKET_ADX_TREND_MIN", "")
@@ -30,6 +32,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Scanner.ScanInterval != time.Hour {
 		t.Fatalf("reconcile interval = %s, want 1h", cfg.Scanner.ScanInterval)
+	}
+	if cfg.Bybit.SpotPublicWSURL != "wss://stream.bybit.com/v5/public/spot" || cfg.Spot.MarketRefreshInterval != time.Minute {
+		t.Fatalf("unexpected Spot defaults: %+v %+v", cfg.Bybit, cfg.Spot)
 	}
 	if cfg.Scanner.MarketADXSidewaysMax != 20 ||
 		cfg.Scanner.MarketCHOPSidewaysMin != 61.8 ||
@@ -167,4 +172,32 @@ func TestLoadRejectsInvalidMarketRegimeThresholds(t *testing.T) {
 			}
 		})
 	}
+}
+
+
+func TestLoadSpotConfiguration(t *testing.T) {
+	t.Setenv("BYBIT_PUBLIC_SPOT_WS_URL", "wss://spot.example.test/v5/public/spot")
+	t.Setenv("SPOT_MARKET_REFRESH_INTERVAL", "45s")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Bybit.SpotPublicWSURL != "wss://spot.example.test/v5/public/spot" || cfg.Spot.MarketRefreshInterval != 45*time.Second {
+		t.Fatalf("unexpected Spot configuration: %+v %+v", cfg.Bybit, cfg.Spot)
+	}
+}
+
+func TestLoadRejectsInvalidSpotConfiguration(t *testing.T) {
+	t.Run("invalid refresh interval", func(t *testing.T) {
+		t.Setenv("SPOT_MARKET_REFRESH_INTERVAL", "not-a-duration")
+		if _, err := Load(); err == nil {
+			t.Fatal("expected invalid Spot refresh interval to fail")
+		}
+	})
+	t.Run("invalid websocket scheme", func(t *testing.T) {
+		t.Setenv("BYBIT_PUBLIC_SPOT_WS_URL", "http://example.test/spot")
+		if _, err := Load(); err == nil {
+			t.Fatal("expected invalid Spot WebSocket URL to fail")
+		}
+	})
 }

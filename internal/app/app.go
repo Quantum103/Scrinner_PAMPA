@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/config"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/market"
+	"github.com/Quantum103/Scrinner_PAMPA/internal/momentum"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/migrations"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/scanner"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/storage"
@@ -29,8 +31,12 @@ type App struct {
 	config        config.Config
 	marketSync    *market.Synchronizer
 	signalScanner *scanner.Scanner
-	publicStream  *bybit.PublicStream
-	telegramBot   *telegrambot.Bot
+	publicStream       *bybit.PublicStream
+	spotRESTClient     *bybit.Client
+	spotSynchronizer   *market.SpotSynchronizer
+	spotPublicStream   *bybit.PublicSpotStream
+	momentumTracker    *momentum.Tracker
+	telegramBot        *telegrambot.Bot
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -93,6 +99,22 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return nil, fmt.Errorf("initialize RSI scanner: %w", err)
 	}
 
+	spotSynchronizer, err := market.NewSpotSynchronizer(restClient, repository)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize Bybit Spot market synchronizer: %w", err)
+	}
+	spotPublicStream, err := bybit.NewPublicSpotStream(cfg.Bybit.SpotPublicWSURL)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize Bybit Spot public WebSocket: %w", err)
+	}
+	momentumTracker, err := momentum.NewTracker(momentum.DefaultWindow, momentum.DefaultThresholdPercent, momentum.DefaultMaxReferenceAge)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize Spot momentum tracker: %w", err)
+	}
+
 	var telegramBotInstance *telegrambot.Bot
 	switch {
 	case cfg.Telegram.BotToken == "":
@@ -121,13 +143,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	return &App{
 		pool: pool, storage: repository, server: server, logger: logger,
 		config: cfg, marketSync: marketSync, signalScanner: signalScanner,
-		publicStream: publicStream, telegramBot: telegramBotInstance,
+		publicStream: publicStream, spotRESTClient: restClient,
+		spotSynchronizer: spotSynchronizer, spotPublicStream: spotPublicStream,
+		momentumTracker: momentumTracker, telegramBot: telegramBotInstance,
 	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go a.runSpotMonitor(runCtx)
 	if a.telegramBot != nil {
 		go func() {
 			if err := a.telegramBot.Run(runCtx); err != nil && runCtx.Err() == nil {
@@ -174,6 +199,221 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+
+const spotSubscriptionShardSize = 100
+const spotHistoryCandleLimit = 20
+const spotHistoryWorkers = 8
+
+func (a *App) runSpotMonitor(ctx context.Context) {
+	ticker := time.NewTicker(a.config.Spot.MarketRefreshInterval)
+	defer ticker.Stop()
+
+	seedResults := make(chan []string, 1)
+	seedInFlight := make(map[string]struct{})
+	activeSymbols := make([]string, 0)
+	var stopStreams func()
+
+	refresh := func() {
+		syncCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		stats, err := a.spotSynchronizer.Sync(syncCtx)
+		cancel()
+		if err != nil {
+			a.logger.Error("Bybit Spot market catalogue refresh failed", "error", err)
+			return
+		}
+
+		watchlist, err := a.storage.ListSpotWatchlist(ctx)
+		if err != nil {
+			a.logger.Error("load Bybit Spot Watchlist failed", "error", err)
+			return
+		}
+		symbols := make([]string, 0, len(watchlist))
+		for _, item := range watchlist {
+			symbols = append(symbols, strings.ToUpper(strings.TrimSpace(item.Symbol)))
+		}
+		sort.Strings(symbols)
+
+		if !sameSpotSymbols(activeSymbols, symbols) {
+			if stopStreams != nil {
+				stopStreams()
+				stopStreams = nil
+			}
+			a.momentumTracker.KeepSymbols(symbols)
+			activeSymbols = append(activeSymbols[:0], symbols...)
+			if len(symbols) > 0 {
+				stopStreams = a.startSpotStreams(ctx, symbols)
+			}
+			a.logger.Info("Bybit Spot ticker subscriptions reconciled",
+				"watchlist_symbols", len(symbols),
+				"connections", (len(symbols)+spotSubscriptionShardSize-1)/spotSubscriptionShardSize)
+		}
+
+		toSeed := make([]string, 0)
+		for _, symbol := range symbols {
+			if !a.momentumTracker.HasHistory(symbol) {
+				if _, inFlight := seedInFlight[symbol]; !inFlight {
+					seedInFlight[symbol] = struct{}{}
+					toSeed = append(toSeed, symbol)
+				}
+			}
+		}
+		if len(toSeed) > 0 {
+			seedBatch := append([]string(nil), toSeed...)
+			go func() {
+				a.seedSpotHistory(ctx, seedBatch)
+				select {
+				case seedResults <- seedBatch:
+				case <-ctx.Done():
+				}
+			}()
+		}
+
+		a.logger.Info("Bybit Spot market snapshot refreshed",
+			"instruments", stats.Instruments,
+			"watchlist", stats.Watchlist,
+			"over_limit_hold", stats.OverLimitHold,
+			"history_seed_pending", len(seedInFlight))
+	}
+
+	refresh()
+	for {
+		select {
+		case <-ctx.Done():
+			if stopStreams != nil {
+				stopStreams()
+			}
+			return
+		case <-ticker.C:
+			refresh()
+		case completed := <-seedResults:
+			for _, symbol := range completed {
+				delete(seedInFlight, symbol)
+			}
+		}
+	}
+}
+
+func (a *App) startSpotStreams(parent context.Context, symbols []string) func() {
+	streamCtx, cancel := context.WithCancel(parent)
+	var wait sync.WaitGroup
+	for start := 0; start < len(symbols); start += spotSubscriptionShardSize {
+		end := start + spotSubscriptionShardSize
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		shard := append([]string(nil), symbols[start:end]...)
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			err := a.spotPublicStream.Run(streamCtx, shard, bybit.SpotStreamHandlers{
+				OnTicker: func(_ context.Context, update bybit.SpotPriceUpdate) error {
+					signal, err := a.momentumTracker.Add(update.Symbol, momentum.PricePoint{
+						At: update.At, Price: update.Price,
+					})
+					if err != nil {
+						return err
+					}
+					if signal != nil {
+						a.logger.Info("Spot momentum threshold crossed",
+							"symbol", signal.Symbol,
+							"change_percent", signal.ChangePercent,
+							"current_price", signal.Price,
+							"reference_price", signal.ReferencePrice,
+							"reference_at", signal.ReferenceAt,
+							"detected_at", signal.At,
+							"window", momentum.DefaultWindow.String())
+					}
+					return nil
+				},
+				OnDisconnect: func(disconnectErr error) {
+					a.logger.Warn("Bybit Spot WebSocket disconnected; reconnect scheduled",
+						"symbols", len(shard), "error", disconnectErr)
+				},
+			})
+			if err != nil && streamCtx.Err() == nil {
+				a.logger.Error("Bybit Spot WebSocket stream stopped", "symbols", len(shard), "error", err)
+			}
+		}()
+	}
+	return func() {
+		cancel()
+		wait.Wait()
+	}
+}
+
+func (a *App) seedSpotHistory(ctx context.Context, symbols []string) {
+	if len(symbols) == 0 {
+		return
+	}
+	serverTimeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	serverTime, err := a.spotRESTClient.GetServerTime(serverTimeCtx)
+	cancel()
+	if err != nil {
+		a.logger.Warn("Spot history seed could not get Bybit server time", "symbols", len(symbols), "error", err)
+		return
+	}
+
+	jobs := make(chan string)
+	workerCount := spotHistoryWorkers
+	if len(symbols) < workerCount {
+		workerCount = len(symbols)
+	}
+	var wait sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for symbol := range jobs {
+				requestCtx, requestCancel := context.WithTimeout(ctx, 3*time.Minute)
+				candles, requestErr := a.spotRESTClient.GetSpotKlinesAt(requestCtx, symbol, spotHistoryCandleLimit, serverTime)
+				requestCancel()
+				if requestErr != nil {
+					if ctx.Err() == nil {
+						a.logger.Warn("Spot history seed failed", "symbol", symbol, "error", requestErr)
+					}
+					continue
+				}
+				points := make([]momentum.PricePoint, 0, len(candles))
+				for _, candle := range candles {
+					points = append(points, momentum.PricePoint{At: candle.Close, Price: candle.ClosePrice})
+				}
+				if len(points) == 0 {
+					a.logger.Warn("Spot history seed returned no closed candles", "symbol", symbol)
+					continue
+				}
+				if err := a.momentumTracker.Seed(symbol, points); err != nil {
+					a.logger.Warn("Spot history seed was rejected", "symbol", symbol, "error", err)
+					continue
+				}
+				a.logger.Debug("Spot momentum history seeded", "symbol", symbol, "candles", len(points))
+			}
+		}()
+	}
+	for _, symbol := range symbols {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wait.Wait()
+			return
+		case jobs <- symbol:
+		}
+	}
+	close(jobs)
+	wait.Wait()
+}
+
+func sameSpotSymbols(first, second []string) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for index := range first {
+		if first[index] != second[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) runMarketSync(ctx context.Context, initialSyncDone chan<- struct{}, marketChanged chan<- struct{}) {
