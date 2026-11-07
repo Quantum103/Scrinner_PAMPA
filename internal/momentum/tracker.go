@@ -124,7 +124,8 @@ func (t *Tracker) Add(symbol string, point PricePoint) (*Signal, error) {
 	var signal *Signal
 	if ok {
 		change := (point.Price/reference.Price - 1) * 100
-		if change <= t.threshold {
+		thresholdPrice := reference.Price * (1 + t.threshold/100)
+		if point.Price <= thresholdPrice {
 			series.armed = true
 		} else if series.armed {
 			signal = &Signal{
