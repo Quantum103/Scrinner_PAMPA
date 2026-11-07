@@ -129,3 +129,34 @@ func TestSpotAlertRejectsInvalidDataAndInactiveSubscriber(t *testing.T) {
 		t.Fatalf("invalid Spot alert error = %v", err)
 	}
 }
+
+func TestSpotAlertDeliveryLeaseCanBeRecoveredAfterWorkerRestart(t *testing.T) {
+	repository, _ := testRepository(t)
+	ctx := context.Background()
+	subscriber := createTestUser(t, repository)
+	if err := repository.SubscribeSpotAlerts(ctx, subscriber.ID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	alert := SpotMomentumAlert{
+		Symbol: "LEASE" + uniqueSuffix() + "USDT",
+		DetectedAt: now, ReferenceAt: now.Add(-15 * time.Minute),
+		Price: 1.1, ReferencePrice: 1, ChangePercent: 10, WindowSeconds: 900,
+	}
+	alertID, inserted, _, err := repository.SaveSpotMomentumAlert(ctx, alert)
+	if err != nil || !inserted {
+		t.Fatalf("save Spot event: id=%d inserted=%t err=%v", alertID, inserted, err)
+	}
+	first, err := repository.ClaimPendingSpotAlertDeliveries(ctx, 10, time.Millisecond)
+	if err != nil || len(first) != 1 || first[0].AttemptCount != 1 {
+		t.Fatalf("first lease: deliveries=%+v err=%v", first, err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	recovered, err := repository.ClaimPendingSpotAlertDeliveries(ctx, 10, time.Minute)
+	if err != nil || len(recovered) != 1 || recovered[0].AttemptCount != 2 {
+		t.Fatalf("stale lease recovery: deliveries=%+v err=%v", recovered, err)
+	}
+	if err := repository.MarkSpotAlertDeliverySent(ctx, subscriber.ID, alertID); err != nil {
+		t.Fatalf("mark recovered delivery sent: %v", err)
+	}
+}

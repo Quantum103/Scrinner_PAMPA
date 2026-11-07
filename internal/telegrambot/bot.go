@@ -688,6 +688,17 @@ func (b *Bot) deliverSpotAlert(ctx context.Context, delivery storage.SpotAlertDe
 
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer persistCancel()
+	if err != nil && isPermanentTelegramDeliveryError(err) {
+		if unsubscribeErr := b.repository.UnsubscribeSpotAlerts(persistCtx, delivery.UserID); unsubscribeErr == nil {
+			b.logger.Warn("Spot alerts disabled after permanent Telegram delivery error",
+				"user_id", delivery.UserID, "alert_id", delivery.AlertID, "error", err)
+			return
+		} else {
+			b.logger.Error("disable Spot subscription after permanent Telegram delivery error failed",
+				"user_id", delivery.UserID, "alert_id", delivery.AlertID,
+				"send_error", err, "storage_error", unsubscribeErr)
+		}
+	}
 	if err == nil {
 		if markErr := b.repository.MarkSpotAlertDeliverySent(persistCtx, delivery.UserID, delivery.AlertID); markErr != nil {
 			b.logger.Error("mark Telegram Spot alert delivery as sent failed",

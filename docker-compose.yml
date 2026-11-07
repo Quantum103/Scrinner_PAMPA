@@ -26,6 +26,7 @@ services:
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-info}
       APP_HTTP_ADDR: ${APP_HTTP_ADDR:-:8080}
       APP_SHUTDOWN_TIMEOUT: ${APP_SHUTDOWN_TIMEOUT:-10s}
+      APP_DATA_DIR: /data
       MIGRATIONS_DIR: /app/migrations
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-rsi_scanner}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rsi_scanner}?sslmode=disable}
       DB_POOL_MAX_CONNS: ${DB_POOL_MAX_CONNS:-20}
@@ -46,6 +47,8 @@ services:
       SCANNER_MARKET_ADX_TREND_MIN: ${SCANNER_MARKET_ADX_TREND_MIN:-25}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ACCESS_PASSWORD: ${TELEGRAM_ACCESS_PASSWORD:-}
+    volumes:
+      - spot_alert_data:/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,3 +63,4 @@ services:
 
 volumes:
   postgres_data:
+  spot_alert_data:

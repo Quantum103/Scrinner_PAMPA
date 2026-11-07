@@ -24,6 +24,7 @@ type AppConfig struct {
 	HTTPAddr        string
 	ShutdownTimeout time.Duration
 	MigrationsDir   string
+	DataDir         string
 }
 
 type DatabaseConfig struct {
@@ -67,6 +68,7 @@ func Load() (Config, error) {
 			LogLevel:        strings.ToLower(env("APP_LOG_LEVEL", "info")),
 			HTTPAddr:        env("APP_HTTP_ADDR", ":8080"),
 			MigrationsDir:   env("MIGRATIONS_DIR", "./migrations"),
+			DataDir:         env("APP_DATA_DIR", "./data"),
 			ShutdownTimeout: 10 * time.Second,
 		},
 		Database: DatabaseConfig{
@@ -163,6 +165,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.App.MigrationsDir) == "" {
 		return fmt.Errorf("MIGRATIONS_DIR must not be empty")
+	}
+	if strings.TrimSpace(c.App.DataDir) == "" {
+		return fmt.Errorf("APP_DATA_DIR must not be empty")
 	}
 	if c.Telegram.BotToken != "" && len([]rune(c.Telegram.AccessPassword)) < 12 {
 		return fmt.Errorf("TELEGRAM_ACCESS_PASSWORD must contain at least 12 characters when TELEGRAM_BOT_TOKEN is set")

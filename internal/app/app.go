@@ -37,7 +37,8 @@ type App struct {
 	spotPublicStream *bybit.PublicSpotStream
 	momentumTracker  *momentum.Tracker
 	telegramBot      *telegrambot.Bot
-	spotAlertEvents  chan storage.SpotMomentumAlert
+	spotAlertSpool   *spotAlertSpool
+	spotAlertEvents  chan struct{}
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -115,6 +116,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		pool.Close()
 		return nil, fmt.Errorf("initialize Spot momentum tracker: %w", err)
 	}
+	alertSpool, err := newSpotAlertSpool(cfg.App.DataDir)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize durable Spot alert spool: %w", err)
+	}
 
 	var telegramBotInstance *telegrambot.Bot
 	switch {
@@ -147,7 +153,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		publicStream: publicStream, spotRESTClient: restClient,
 		spotSynchronizer: spotSynchronizer, spotPublicStream: spotPublicStream,
 		momentumTracker: momentumTracker, telegramBot: telegramBotInstance,
-		spotAlertEvents: make(chan storage.SpotMomentumAlert, 1000),
+		spotAlertSpool: alertSpool, spotAlertEvents: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -297,39 +303,69 @@ func (a *App) runSpotMonitor(ctx context.Context) {
 	}
 }
 
-// runSpotAlertPersistence stores each crossing and atomically creates deliveries
-// for all active Telegram subscribers. Failed database writes are retried.
+// runSpotAlertPersistence drains the durable local spool into PostgreSQL.
+// Records survive process restarts and are acknowledged only after the DB commit.
 func (a *App) runSpotAlertPersistence(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case alert := <-a.spotAlertEvents:
-			retryDelay := time.Second
-			for attempt := 1; ; attempt++ {
-				saveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-				alertID, inserted, queued, err := a.storage.SaveSpotMomentumAlert(saveCtx, alert)
-				cancel()
-				if err == nil {
-					if inserted {
-						a.logger.Info("Spot momentum alert persisted",
-							"alert_id", alertID, "symbol", alert.Symbol,
-							"change_percent", alert.ChangePercent, "deliveries_queued", queued)
+		alert, pending, err := a.spotAlertSpool.Peek()
+		if err != nil {
+			a.logger.Error("read durable Spot alert spool failed", "error", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-a.spotAlertEvents:
+			case <-ticker.C:
+			}
+			continue
+		}
+		if !pending {
+			select {
+			case <-ctx.Done():
+				return
+			case <-a.spotAlertEvents:
+			case <-ticker.C:
+			}
+			continue
+		}
+
+		retryDelay := time.Second
+		for attempt := 1; ; attempt++ {
+			saveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			alertID, inserted, queued, saveErr := a.storage.SaveSpotMomentumAlert(saveCtx, alert)
+			cancel()
+			if saveErr == nil {
+				if inserted {
+					a.logger.Info("Spot momentum alert persisted",
+						"alert_id", alertID, "symbol", alert.Symbol,
+						"change_percent", alert.ChangePercent, "deliveries_queued", queued)
+				}
+				for {
+					if ackErr := a.spotAlertSpool.Ack(alert); ackErr == nil {
+						break
+					} else {
+						a.logger.Error("acknowledge persisted Spot alert spool record failed",
+							"symbol", alert.Symbol, "error", ackErr)
 					}
-					break
+					if !waitForSpotPersistenceRetry(ctx, time.Second) {
+						return
+					}
 				}
-				if ctx.Err() != nil {
-					return
-				}
-				a.logger.Error("persist Spot momentum alert failed; retry scheduled",
-					"symbol", alert.Symbol, "attempt", attempt, "error", err)
-				if !waitForSpotPersistenceRetry(ctx, retryDelay) {
-					return
-				}
-				retryDelay *= 2
-				if retryDelay > 30*time.Second {
-					retryDelay = 30 * time.Second
-				}
+				break
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			a.logger.Error("persist Spot momentum alert failed; retry scheduled",
+				"symbol", alert.Symbol, "attempt", attempt, "error", saveErr)
+			if !waitForSpotPersistenceRetry(ctx, retryDelay) {
+				return
+			}
+			retryDelay *= 2
+			if retryDelay > 30*time.Second {
+				retryDelay = 30 * time.Second
 			}
 		}
 	}
@@ -373,10 +409,15 @@ func (a *App) startSpotStreams(parent context.Context, symbols []string) func() 
 							ChangePercent: signal.ChangePercent,
 							WindowSeconds: int(momentum.DefaultWindow / time.Second),
 						}
+						if err := a.spotAlertSpool.Append(alert); err != nil {
+							a.momentumTracker.Rearm(update.Symbol)
+							a.logger.Error("append Spot alert to durable spool failed",
+								"symbol", signal.Symbol, "error", err)
+							return err
+						}
 						select {
-						case a.spotAlertEvents <- alert:
-						case <-streamCtx.Done():
-							return streamCtx.Err()
+						case a.spotAlertEvents <- struct{}{}:
+						default:
 						}
 					}
 					return nil

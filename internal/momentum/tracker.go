@@ -142,6 +142,17 @@ func (t *Tracker) Add(symbol string, point PricePoint) (*Signal, error) {
 	return signal, nil
 }
 
+// Rearm allows a downstream persistence failure to retry the current
+// above-threshold excursion on the next live price update.
+func (t *Tracker) Rearm(symbol string) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if series := t.symbols[symbol]; series != nil {
+		series.armed = true
+	}
+}
+
 func (t *Tracker) HasSymbol(symbol string) bool {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	t.mu.RLock()

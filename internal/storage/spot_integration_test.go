@@ -146,3 +146,44 @@ func TestSyncSpotCatalogRejectsInvalidSnapshot(t *testing.T) {
 		})
 	}
 }
+
+func TestSyncSpotCatalogReturnsPairToWatchlistDuringHold(t *testing.T) {
+	repository, _ := testRepository(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	symbol := "RV" + uniqueSuffix() + "USDT"
+	baseCoin := symbol[:len(symbol)-4]
+	snapshot := func(at time.Time, turnover string) []SpotInstrument {
+		return []SpotInstrument{{
+			Symbol: symbol, BaseCoin: baseCoin, QuoteCoin: "USDT", Status: "Trading",
+			Turnover24h: turnover, LastPrice: "0.125", TickerUpdatedAt: at,
+		}}
+	}
+
+	if err := repository.SyncSpotCatalog(ctx, snapshot(now, "900000"), 1_000_000, 24*time.Hour, now); err != nil {
+		t.Fatalf("initial catalogue sync: %v", err)
+	}
+	crossedAt := now.Add(time.Minute)
+	if err := repository.SyncSpotCatalog(ctx, snapshot(crossedAt, "1100000"), 1_000_000, 24*time.Hour, crossedAt); err != nil {
+		t.Fatalf("turnover crossing sync: %v", err)
+	}
+	watchlist, err := repository.ListSpotWatchlist(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(watchlist) != 1 || watchlist[0].State != SpotWatchlistOverLimitHold {
+		t.Fatalf("pair should be in hold after crossing: %+v", watchlist)
+	}
+
+	returnedAt := crossedAt.Add(time.Hour)
+	if err := repository.SyncSpotCatalog(ctx, snapshot(returnedAt, "1000000"), 1_000_000, 24*time.Hour, returnedAt); err != nil {
+		t.Fatalf("turnover return sync: %v", err)
+	}
+	watchlist, err = repository.ListSpotWatchlist(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(watchlist) != 1 || watchlist[0].State != SpotWatchlistWatching || watchlist[0].OverLimitSince != nil {
+		t.Fatalf("pair at exactly $1m should return to normal Watchlist: %+v", watchlist)
+	}
+}

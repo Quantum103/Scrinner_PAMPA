@@ -8,6 +8,7 @@ import (
 
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("APP_LOG_LEVEL", "")
+	t.Setenv("APP_DATA_DIR", "")
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("SCANNER_TIMEFRAMES", "")
 	t.Setenv("SCANNER_RECONCILE_INTERVAL", "")
@@ -23,6 +24,9 @@ func TestLoadDefaults(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.App.DataDir != "./data" {
+		t.Fatalf("data directory = %q, want ./data", cfg.App.DataDir)
 	}
 	if cfg.Scanner.RSILength != 14 || cfg.Scanner.EMALength != 9 {
 		t.Fatalf("unexpected indicator defaults: RSI=%d EMA=%d", cfg.Scanner.RSILength, cfg.Scanner.EMALength)
@@ -199,4 +203,26 @@ func TestLoadRejectsInvalidSpotConfiguration(t *testing.T) {
 			t.Fatal("expected invalid Spot WebSocket URL to fail")
 		}
 	})
+}
+
+func TestLoadSpotAlertDataDirectory(t *testing.T) {
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.App.DataDir == "" {
+		t.Fatal("APP_DATA_DIR was not loaded")
+	}
+}
+
+func TestValidateRejectsEmptySpotAlertDataDirectory(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.App.DataDir = " "
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("empty APP_DATA_DIR must be rejected")
+	}
 }

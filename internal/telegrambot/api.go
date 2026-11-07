@@ -44,6 +44,42 @@ func newAPIClient(token string, client *http.Client, baseURL string) (*apiClient
 	return &apiClient{token: token, baseURL: baseURL, httpClient: client}, nil
 }
 
+type telegramAPIError struct {
+	Method      string
+	Code        int
+	Description string
+}
+
+func (e *telegramAPIError) Error() string {
+	return fmt.Sprintf("Telegram %s failed (code %d): %s", e.Method, e.Code, e.Description)
+}
+
+func isPermanentTelegramDeliveryError(err error) bool {
+	var apiErr *telegramAPIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.Code == http.StatusForbidden {
+		return true
+	}
+	description := strings.ToLower(apiErr.Description)
+	if apiErr.Code != http.StatusBadRequest {
+		return false
+	}
+	for _, phrase := range []string{
+		"chat not found",
+		"user is deactivated",
+		"bot was blocked by the user",
+		"bot was kicked from the group chat",
+		"can't initiate conversation",
+	} {
+		if strings.Contains(description, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 type apiEnvelope struct {
 	OK          bool            `json:"ok"`
 	Result      json.RawMessage `json:"result"`
@@ -82,7 +118,7 @@ func (c *apiClient) call(ctx context.Context, method string, requestBody any, de
 		if len(message) > 300 {
 			message = message[:300]
 		}
-		return fmt.Errorf("Telegram %s returned HTTP %d: %s", method, response.StatusCode, message)
+		return &telegramAPIError{Method: method, Code: response.StatusCode, Description: message}
 	}
 
 	var envelope apiEnvelope
@@ -90,7 +126,7 @@ func (c *apiClient) call(ctx context.Context, method string, requestBody any, de
 		return fmt.Errorf("decode Telegram %s response: %w", method, err)
 	}
 	if !envelope.OK {
-		return fmt.Errorf("Telegram %s failed (code %d): %s", method, envelope.ErrorCode, envelope.Description)
+		return &telegramAPIError{Method: method, Code: envelope.ErrorCode, Description: envelope.Description}
 	}
 	if destination != nil && len(envelope.Result) > 0 && string(envelope.Result) != "null" {
 		if err := json.Unmarshal(envelope.Result, destination); err != nil {

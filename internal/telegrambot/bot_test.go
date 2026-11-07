@@ -2,6 +2,7 @@ package telegrambot
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ type fakeTelegramAPI struct {
 	edited       []string
 	answered     int
 	deleted      []int64
+	sendErr      error
 }
 
 func (f *fakeTelegramAPI) getUpdates(context.Context, int64, int64) ([]telegramUpdate, error) {
@@ -22,7 +24,7 @@ func (f *fakeTelegramAPI) getUpdates(context.Context, int64, int64) ([]telegramU
 
 func (f *fakeTelegramAPI) sendMessage(_ context.Context, _ int64, message string, _ *inlineKeyboard) error {
 	f.sentMessages = append(f.sentMessages, message)
-	return nil
+	return f.sendErr
 }
 
 func (f *fakeTelegramAPI) editMessageText(_ context.Context, _, _ int64, message string, _ *inlineKeyboard) error {
@@ -51,9 +53,12 @@ func (f *fakeTelegramAPI) setMyCommands(context.Context) error { return nil }
 type fakeTelegramRepository struct {
 	users             map[int64]storage.TelegramUser
 	settings          map[int64]storage.UserSettings
-	spotSubscriptions map[int64]bool
-	ensureCalls       int
-	updates           int
+	spotSubscriptions      map[int64]bool
+	spotUnsubscribeCalls   int
+	spotDeliveryFailed     int
+	spotDeliverySent       int
+	ensureCalls            int
+	updates                int
 }
 
 func newFakeTelegramRepository() *fakeTelegramRepository {
@@ -144,6 +149,7 @@ func (f *fakeTelegramRepository) SubscribeSpotAlerts(_ context.Context, userID i
 }
 
 func (f *fakeTelegramRepository) UnsubscribeSpotAlerts(_ context.Context, userID int64) error {
+	f.spotUnsubscribeCalls++
 	delete(f.spotSubscriptions, userID)
 	return nil
 }
@@ -153,10 +159,12 @@ func (f *fakeTelegramRepository) ClaimPendingSpotAlertDeliveries(context.Context
 }
 
 func (f *fakeTelegramRepository) MarkSpotAlertDeliverySent(context.Context, int64, int64) error {
+	f.spotDeliverySent++
 	return nil
 }
 
 func (f *fakeTelegramRepository) MarkSpotAlertDeliveryFailed(context.Context, int64, int64, time.Time, error) error {
+	f.spotDeliveryFailed++
 	return nil
 }
 
@@ -490,5 +498,60 @@ func TestFormatSpotAlertIncludesMomentumDetails(t *testing.T) {
 		if !strings.Contains(message, expected) {
 			t.Errorf("formatted Spot alert does not contain %q: %s", expected, message)
 		}
+	}
+}
+
+func TestPermanentSpotDeliveryFailureUnsubscribesUser(t *testing.T) {
+	bot, api, repository := newTestBot(t)
+	user := storage.TelegramUser{ID: 7, TelegramID: 7007, IsActive: true}
+	repository.users[user.TelegramID] = user
+	repository.spotSubscriptions[user.ID] = true
+	api.sendErr = &telegramAPIError{
+		Method: "sendMessage", Code: 403, Description: "bot was blocked by the user",
+	}
+
+	bot.deliverSpotAlert(context.Background(), storage.SpotAlertDelivery{
+		UserID: user.ID, TelegramID: user.TelegramID, AlertID: 99, AttemptCount: 1,
+	})
+	if repository.spotSubscriptions[user.ID] {
+		t.Fatal("permanent Telegram delivery error must remove the Spot subscription")
+	}
+	if repository.spotUnsubscribeCalls != 1 || repository.spotDeliveryFailed != 0 {
+		t.Fatalf("permanent delivery handling: unsubscribe=%d retry=%d",
+			repository.spotUnsubscribeCalls, repository.spotDeliveryFailed)
+	}
+}
+
+func TestTransientSpotDeliveryFailureSchedulesRetry(t *testing.T) {
+	bot, api, repository := newTestBot(t)
+	user := storage.TelegramUser{ID: 8, TelegramID: 8008, IsActive: true}
+	repository.users[user.TelegramID] = user
+	repository.spotSubscriptions[user.ID] = true
+	api.sendErr = errors.New("temporary network timeout")
+
+	bot.deliverSpotAlert(context.Background(), storage.SpotAlertDelivery{
+		UserID: user.ID, TelegramID: user.TelegramID, AlertID: 100, AttemptCount: 1,
+	})
+	if !repository.spotSubscriptions[user.ID] {
+		t.Fatal("temporary Telegram error must not remove the Spot subscription")
+	}
+	if repository.spotUnsubscribeCalls != 0 || repository.spotDeliveryFailed != 1 {
+		t.Fatalf("temporary delivery handling: unsubscribe=%d retry=%d",
+			repository.spotUnsubscribeCalls, repository.spotDeliveryFailed)
+	}
+}
+
+func TestSuccessfulSpotDeliveryIsMarkedSent(t *testing.T) {
+	bot, _, repository := newTestBot(t)
+	user := storage.TelegramUser{ID: 9, TelegramID: 9009, IsActive: true}
+	repository.users[user.TelegramID] = user
+	repository.spotSubscriptions[user.ID] = true
+
+	bot.deliverSpotAlert(context.Background(), storage.SpotAlertDelivery{
+		UserID: user.ID, TelegramID: user.TelegramID, AlertID: 101, AttemptCount: 1,
+	})
+	if repository.spotDeliverySent != 1 || repository.spotDeliveryFailed != 0 {
+		t.Fatalf("successful delivery state: sent=%d failed=%d",
+			repository.spotDeliverySent, repository.spotDeliveryFailed)
 	}
 }

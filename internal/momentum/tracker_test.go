@@ -188,3 +188,25 @@ func TestTrackerSeedMergesHistoryWithLivePoint(t *testing.T) {
 		t.Fatalf("seed/live merge did not preserve historical baseline: %+v", signal)
 	}
 }
+
+func TestTrackerCanRearmAfterDownstreamPersistenceFailure(t *testing.T) {
+	tracker := newTestTracker(t)
+	start := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	if err := tracker.Seed("ABCUSDT", []PricePoint{{At: start, Price: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := tracker.Add("ABCUSDT", PricePoint{At: start.Add(15*time.Minute + time.Second), Price: 106})
+	if err != nil || first == nil {
+		t.Fatalf("first crossing: signal=%+v err=%v", first, err)
+	}
+	duplicate, err := tracker.Add("ABCUSDT", PricePoint{At: start.Add(15*time.Minute + 2*time.Second), Price: 107})
+	if err != nil || duplicate != nil {
+		t.Fatalf("tracker should disarm after crossing: signal=%+v err=%v", duplicate, err)
+	}
+
+	tracker.Rearm("ABCUSDT")
+	retried, err := tracker.Add("ABCUSDT", PricePoint{At: start.Add(15*time.Minute + 3*time.Second), Price: 108})
+	if err != nil || retried == nil {
+		t.Fatalf("crossing should be retryable after persistence failure: signal=%+v err=%v", retried, err)
+	}
+}

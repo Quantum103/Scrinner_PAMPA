@@ -3,6 +3,7 @@ package telegrambot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -100,5 +101,46 @@ func TestTelegramAPIDeleteMessage(t *testing.T) {
 	}
 	if err := client.deleteMessage(context.Background(), 42, 99); err != nil {
 		t.Fatalf("deleteMessage() error = %v", err)
+	}
+}
+
+func TestPermanentTelegramDeliveryErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "blocked user",
+			err: &telegramAPIError{Method: "sendMessage", Code: 403, Description: "bot was blocked by the user"},
+			want: true,
+		},
+		{
+			name: "missing private chat",
+			err: &telegramAPIError{Method: "sendMessage", Code: 400, Description: "Bad Request: chat not found"},
+			want: true,
+		},
+		{
+			name: "rate limit",
+			err: &telegramAPIError{Method: "sendMessage", Code: 429, Description: "Too Many Requests"},
+			want: false,
+		},
+		{
+			name: "server error",
+			err: &telegramAPIError{Method: "sendMessage", Code: 500, Description: "Internal Server Error"},
+			want: false,
+		},
+		{
+			name: "network error",
+			err: errors.New("connection reset"),
+			want: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isPermanentTelegramDeliveryError(test.err); got != test.want {
+				t.Fatalf("isPermanentTelegramDeliveryError() = %t, want %t", got, test.want)
+			}
+		})
 	}
 }

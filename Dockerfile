@@ -13,7 +13,9 @@ FROM alpine:3.22
 
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S app \
-    && adduser -S -G app app
+    && adduser -S -G app app \
+    && mkdir -p /data \
+    && chown app:app /data
 
 WORKDIR /app
 COPY --from=builder /out/rsi-scanner /app/rsi-scanner
