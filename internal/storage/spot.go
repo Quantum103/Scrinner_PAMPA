@@ -14,7 +14,7 @@ import (
 const (
 	SpotWatchlistWatching      = "watching"
 	SpotWatchlistOverLimitHold = "over_limit_hold"
-	SpotWatchlistExcluded     = "excluded"
+	SpotWatchlistExcluded      = "excluded"
 )
 
 type SpotInstrument struct {

@@ -60,16 +60,26 @@ func NewSpotSynchronizer(source SpotMarketDataSource, repository SpotInstrumentR
 // previous database catalogue and Watchlist.
 func (s *SpotSynchronizer) Sync(ctx context.Context) (SpotSyncStats, error) {
 	instruments, err := s.source.GetSpotInstruments(ctx)
-	if err != nil { return SpotSyncStats{}, fmt.Errorf("load Bybit Spot catalogue: %w", err) }
-	if len(instruments) == 0 { return SpotSyncStats{}, errors.New("Bybit Spot catalogue is empty; preserving previous snapshot") }
+	if err != nil {
+		return SpotSyncStats{}, fmt.Errorf("load Bybit Spot catalogue: %w", err)
+	}
+	if len(instruments) == 0 {
+		return SpotSyncStats{}, errors.New("Bybit Spot catalogue is empty; preserving previous snapshot")
+	}
 	tickers, err := s.source.GetSpotTickers(ctx)
-	if err != nil { return SpotSyncStats{}, fmt.Errorf("load Bybit Spot ticker snapshot: %w", err) }
-	if len(tickers) == 0 { return SpotSyncStats{}, errors.New("Bybit Spot ticker snapshot is empty; preserving previous snapshot") }
+	if err != nil {
+		return SpotSyncStats{}, fmt.Errorf("load Bybit Spot ticker snapshot: %w", err)
+	}
+	if len(tickers) == 0 {
+		return SpotSyncStats{}, errors.New("Bybit Spot ticker snapshot is empty; preserving previous snapshot")
+	}
 
 	tickerBySymbol := make(map[string]bybit.SpotTicker, len(tickers))
 	for _, ticker := range tickers {
 		symbol := strings.ToUpper(strings.TrimSpace(ticker.Symbol))
-		if symbol == "" { return SpotSyncStats{}, errors.New("Bybit Spot ticker snapshot contains an empty symbol") }
+		if symbol == "" {
+			return SpotSyncStats{}, errors.New("Bybit Spot ticker snapshot contains an empty symbol")
+		}
 		if _, exists := tickerBySymbol[symbol]; exists {
 			return SpotSyncStats{}, fmt.Errorf("duplicate Bybit Spot ticker %s; preserving previous snapshot", symbol)
 		}
@@ -91,7 +101,9 @@ func (s *SpotSynchronizer) Sync(ctx context.Context) (SpotSyncStats, error) {
 		}
 		seen[symbol] = struct{}{}
 		ticker, ok := tickerBySymbol[symbol]
-		if !ok { return SpotSyncStats{}, fmt.Errorf("Bybit Spot ticker snapshot is missing %s; preserving previous snapshot", symbol) }
+		if !ok {
+			return SpotSyncStats{}, fmt.Errorf("Bybit Spot ticker snapshot is missing %s; preserving previous snapshot", symbol)
+		}
 		lastPrice, priceErr := strconv.ParseFloat(strings.TrimSpace(ticker.LastPrice), 64)
 		turnover, turnoverErr := strconv.ParseFloat(strings.TrimSpace(ticker.Turnover24h), 64)
 		if priceErr != nil || math.IsNaN(lastPrice) || math.IsInf(lastPrice, 0) || lastPrice <= 0 {
@@ -103,19 +115,25 @@ func (s *SpotSynchronizer) Sync(ctx context.Context) (SpotSyncStats, error) {
 		snapshot = append(snapshot, storage.SpotInstrument{
 			Symbol: symbol, BaseCoin: baseCoin, QuoteCoin: quoteCoin, Status: "Trading",
 			Turnover24h: strings.TrimSpace(ticker.Turnover24h),
-			LastPrice: strings.TrimSpace(ticker.LastPrice), TickerUpdatedAt: updatedAt,
+			LastPrice:   strings.TrimSpace(ticker.LastPrice), TickerUpdatedAt: updatedAt,
 		})
 	}
-	if len(snapshot) == 0 { return SpotSyncStats{}, errors.New("no active Bybit Spot USDT pairs found; preserving previous snapshot") }
+	if len(snapshot) == 0 {
+		return SpotSyncStats{}, errors.New("no active Bybit Spot USDT pairs found; preserving previous snapshot")
+	}
 
 	if err := s.repository.SyncSpotCatalog(ctx, snapshot, s.turnoverLimit, s.overLimitHold, updatedAt); err != nil {
 		return SpotSyncStats{}, fmt.Errorf("persist Bybit Spot catalogue and Watchlist: %w", err)
 	}
 	watchlist, err := s.repository.ListSpotWatchlist(ctx)
-	if err != nil { return SpotSyncStats{}, fmt.Errorf("read Bybit Spot Watchlist: %w", err) }
+	if err != nil {
+		return SpotSyncStats{}, fmt.Errorf("read Bybit Spot Watchlist: %w", err)
+	}
 	stats := SpotSyncStats{Instruments: len(snapshot), Watchlist: len(watchlist)}
 	for _, item := range watchlist {
-		if item.State == storage.SpotWatchlistOverLimitHold { stats.OverLimitHold++ }
+		if item.State == storage.SpotWatchlistOverLimitHold {
+			stats.OverLimitHold++
+		}
 	}
 	return stats, nil
 }
