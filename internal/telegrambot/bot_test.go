@@ -51,14 +51,14 @@ func (f *fakeTelegramAPI) getMe(context.Context) (telegramUser, error) {
 func (f *fakeTelegramAPI) setMyCommands(context.Context) error { return nil }
 
 type fakeTelegramRepository struct {
-	users             map[int64]storage.TelegramUser
-	settings          map[int64]storage.UserSettings
-	spotSubscriptions      map[int64]bool
-	spotUnsubscribeCalls   int
-	spotDeliveryFailed     int
-	spotDeliverySent       int
-	ensureCalls            int
-	updates                int
+	users                map[int64]storage.TelegramUser
+	settings             map[int64]storage.UserSettings
+	spotSubscriptions    map[int64]bool
+	spotUnsubscribeCalls int
+	spotDeliveryFailed   int
+	spotDeliverySent     int
+	ensureCalls          int
+	updates              int
 }
 
 func newFakeTelegramRepository() *fakeTelegramRepository {

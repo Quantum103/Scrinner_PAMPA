@@ -112,27 +112,27 @@ func TestPermanentTelegramDeliveryErrors(t *testing.T) {
 	}{
 		{
 			name: "blocked user",
-			err: &telegramAPIError{Method: "sendMessage", Code: 403, Description: "bot was blocked by the user"},
+			err:  &telegramAPIError{Method: "sendMessage", Code: 403, Description: "bot was blocked by the user"},
 			want: true,
 		},
 		{
 			name: "missing private chat",
-			err: &telegramAPIError{Method: "sendMessage", Code: 400, Description: "Bad Request: chat not found"},
+			err:  &telegramAPIError{Method: "sendMessage", Code: 400, Description: "Bad Request: chat not found"},
 			want: true,
 		},
 		{
 			name: "rate limit",
-			err: &telegramAPIError{Method: "sendMessage", Code: 429, Description: "Too Many Requests"},
+			err:  &telegramAPIError{Method: "sendMessage", Code: 429, Description: "Too Many Requests"},
 			want: false,
 		},
 		{
 			name: "server error",
-			err: &telegramAPIError{Method: "sendMessage", Code: 500, Description: "Internal Server Error"},
+			err:  &telegramAPIError{Method: "sendMessage", Code: 500, Description: "Internal Server Error"},
 			want: false,
 		},
 		{
 			name: "network error",
-			err: errors.New("connection reset"),
+			err:  errors.New("connection reset"),
 			want: false,
 		},
 	}

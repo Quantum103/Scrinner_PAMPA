@@ -18,7 +18,7 @@ func TestSpotAlertSpoolPersistsAndAcknowledgesRecords(t *testing.T) {
 	first := storage.SpotMomentumAlert{
 		Symbol: "ABCUSDT", DetectedAt: time.Date(2026, 11, 8, 12, 15, 1, 0, time.UTC),
 		ReferenceAt: time.Date(2026, 11, 8, 12, 0, 1, 0, time.UTC),
-		Price: 1.08, ReferencePrice: 1, ChangePercent: 8, WindowSeconds: 900,
+		Price:       1.08, ReferencePrice: 1, ChangePercent: 8, WindowSeconds: 900,
 	}
 	second := first
 	second.Symbol = "XYZUSDT"
@@ -66,7 +66,7 @@ func TestSpotAlertSpoolRecoversIncompleteTail(t *testing.T) {
 	alert := storage.SpotMomentumAlert{
 		Symbol: "ABCUSDT", DetectedAt: time.Date(2026, 11, 8, 12, 15, 1, 0, time.UTC),
 		ReferenceAt: time.Date(2026, 11, 8, 12, 0, 1, 0, time.UTC),
-		Price: 1.08, ReferencePrice: 1, ChangePercent: 8, WindowSeconds: 900,
+		Price:       1.08, ReferencePrice: 1, ChangePercent: 8, WindowSeconds: 900,
 	}
 	if err := spool.Append(alert); err != nil {
 		t.Fatal(err)

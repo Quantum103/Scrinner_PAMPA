@@ -139,7 +139,7 @@ func TestSpotAlertDeliveryLeaseCanBeRecoveredAfterWorkerRestart(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	alert := SpotMomentumAlert{
-		Symbol: "LEASE" + uniqueSuffix() + "USDT",
+		Symbol:     "LEASE" + uniqueSuffix() + "USDT",
 		DetectedAt: now, ReferenceAt: now.Add(-15 * time.Minute),
 		Price: 1.1, ReferencePrice: 1, ChangePercent: 10, WindowSeconds: 900,
 	}
