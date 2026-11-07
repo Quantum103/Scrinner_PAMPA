@@ -174,7 +174,6 @@ func TestLoadRejectsInvalidMarketRegimeThresholds(t *testing.T) {
 	}
 }
 
-
 func TestLoadSpotConfiguration(t *testing.T) {
 	t.Setenv("BYBIT_PUBLIC_SPOT_WS_URL", "wss://spot.example.test/v5/public/spot")
 	t.Setenv("SPOT_MARKET_REFRESH_INTERVAL", "45s")

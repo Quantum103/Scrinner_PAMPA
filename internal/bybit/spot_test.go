@@ -96,7 +96,6 @@ func TestGetSpotTickersRejectsDuplicateSymbols(t *testing.T) {
 	}
 }
 
-
 func TestGetSpotKlinesAtReturnsOnlyClosedOneMinuteCandles(t *testing.T) {
 	serverTime := time.Date(2026, 11, 8, 12, 7, 30, 0, time.UTC)
 	closedStart := time.Date(2026, 11, 8, 12, 6, 0, 0, time.UTC).UnixMilli()
@@ -142,8 +141,8 @@ func TestGetSpotKlinesAtValidatesArguments(t *testing.T) {
 	}
 	now := time.Now()
 	for _, test := range []struct {
-		symbol string
-		limit int
+		symbol     string
+		limit      int
 		serverTime time.Time
 	}{
 		{symbol: "", limit: 20, serverTime: now},

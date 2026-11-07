@@ -105,7 +105,6 @@ func (c *Client) GetSpotTickers(ctx context.Context) ([]SpotTicker, error) {
 	return result, nil
 }
 
-
 // GetSpotKlines reads closed one-minute Spot candles using the current Bybit
 // server time. It is intended to seed the rolling momentum reference window.
 func (c *Client) GetSpotKlines(ctx context.Context, symbol string, limit int) ([]Candle, error) {

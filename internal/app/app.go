@@ -15,8 +15,8 @@ import (
 	"github.com/Quantum103/Scrinner_PAMPA/internal/bybit"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/config"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/market"
-	"github.com/Quantum103/Scrinner_PAMPA/internal/momentum"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/migrations"
+	"github.com/Quantum103/Scrinner_PAMPA/internal/momentum"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/scanner"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/storage"
 	"github.com/Quantum103/Scrinner_PAMPA/internal/telegrambot"
@@ -24,19 +24,19 @@ import (
 )
 
 type App struct {
-	pool          *pgxpool.Pool
-	storage       *storage.Repository
-	server        *http.Server
-	logger        *slog.Logger
-	config        config.Config
-	marketSync    *market.Synchronizer
-	signalScanner *scanner.Scanner
-	publicStream       *bybit.PublicStream
-	spotRESTClient     *bybit.Client
-	spotSynchronizer   *market.SpotSynchronizer
-	spotPublicStream   *bybit.PublicSpotStream
-	momentumTracker    *momentum.Tracker
-	telegramBot        *telegrambot.Bot
+	pool             *pgxpool.Pool
+	storage          *storage.Repository
+	server           *http.Server
+	logger           *slog.Logger
+	config           config.Config
+	marketSync       *market.Synchronizer
+	signalScanner    *scanner.Scanner
+	publicStream     *bybit.PublicStream
+	spotRESTClient   *bybit.Client
+	spotSynchronizer *market.SpotSynchronizer
+	spotPublicStream *bybit.PublicSpotStream
+	momentumTracker  *momentum.Tracker
+	telegramBot      *telegrambot.Bot
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -200,7 +200,6 @@ func (a *App) Run(ctx context.Context) error {
 		return nil
 	}
 }
-
 
 const spotSubscriptionShardSize = 100
 const spotHistoryCandleLimit = 20

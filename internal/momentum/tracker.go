@@ -32,9 +32,9 @@ type Signal struct {
 }
 
 type symbolSeries struct {
-	points      []PricePoint
-	armed       bool
-	hasHistory  bool
+	points     []PricePoint
+	armed      bool
+	hasHistory bool
 }
 
 type Tracker struct {

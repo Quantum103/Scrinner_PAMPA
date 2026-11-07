@@ -75,8 +75,8 @@ func Load() (Config, error) {
 			MinConns: 2,
 		},
 		Bybit: BybitConfig{
-			RESTURL:     env("BYBIT_REST_URL", "https://api.bybit.com"),
-			PublicWSURL: env("BYBIT_PUBLIC_WS_URL", "wss://stream.bybit.com/v5/public/linear"),
+			RESTURL:         env("BYBIT_REST_URL", "https://api.bybit.com"),
+			PublicWSURL:     env("BYBIT_PUBLIC_WS_URL", "wss://stream.bybit.com/v5/public/linear"),
 			SpotPublicWSURL: env("BYBIT_PUBLIC_SPOT_WS_URL", "wss://stream.bybit.com/v5/public/spot"),
 		},
 		Scanner: ScannerConfig{
