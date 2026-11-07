@@ -49,16 +49,18 @@ func (f *fakeTelegramAPI) getMe(context.Context) (telegramUser, error) {
 func (f *fakeTelegramAPI) setMyCommands(context.Context) error { return nil }
 
 type fakeTelegramRepository struct {
-	users       map[int64]storage.TelegramUser
-	settings    map[int64]storage.UserSettings
-	ensureCalls int
-	updates     int
+	users             map[int64]storage.TelegramUser
+	settings          map[int64]storage.UserSettings
+	spotSubscriptions map[int64]bool
+	ensureCalls       int
+	updates           int
 }
 
 func newFakeTelegramRepository() *fakeTelegramRepository {
 	return &fakeTelegramRepository{
-		users:    make(map[int64]storage.TelegramUser),
-		settings: make(map[int64]storage.UserSettings),
+		users:             make(map[int64]storage.TelegramUser),
+		settings:          make(map[int64]storage.UserSettings),
+		spotSubscriptions: make(map[int64]bool),
 	}
 }
 
@@ -132,6 +134,41 @@ func (f *fakeTelegramRepository) MarkDeliveryFailed(context.Context, int64, int6
 	return nil
 }
 
+func (f *fakeTelegramRepository) SubscribeSpotAlerts(_ context.Context, userID int64) error {
+	user, exists := f.usersByID(userID)
+	if !exists || !user.IsActive {
+		return storage.ErrNotFound
+	}
+	f.spotSubscriptions[userID] = true
+	return nil
+}
+
+func (f *fakeTelegramRepository) UnsubscribeSpotAlerts(_ context.Context, userID int64) error {
+	delete(f.spotSubscriptions, userID)
+	return nil
+}
+
+func (f *fakeTelegramRepository) ClaimPendingSpotAlertDeliveries(context.Context, int, time.Duration) ([]storage.SpotAlertDelivery, error) {
+	return nil, nil
+}
+
+func (f *fakeTelegramRepository) MarkSpotAlertDeliverySent(context.Context, int64, int64) error {
+	return nil
+}
+
+func (f *fakeTelegramRepository) MarkSpotAlertDeliveryFailed(context.Context, int64, int64, time.Time, error) error {
+	return nil
+}
+
+func (f *fakeTelegramRepository) usersByID(userID int64) (storage.TelegramUser, bool) {
+	for _, user := range f.users {
+		if user.ID == userID {
+			return user, true
+		}
+	}
+	return storage.TelegramUser{}, false
+}
+
 func newTestBot(t *testing.T) (*Bot, *fakeTelegramAPI, *fakeTelegramRepository) {
 	t.Helper()
 	api := &fakeTelegramAPI{}
@@ -183,6 +220,43 @@ func TestPasswordAuthenticationDeletesPasswordMessageAndPersistsUser(t *testing.
 	user, exists := repository.users[1001]
 	if !exists || !user.IsActive || user.ID == 0 || len(api.deleted) != 2 || !containsText(api.sentMessages[len(api.sentMessages)-1], "Доступ открыт") {
 		t.Fatalf("correct password did not authorize user: user=%+v exists=%v deleted=%v messages=%#v", user, exists, api.deleted, api.sentMessages)
+	}
+}
+
+func TestStartAndStopControlSpotAlertSubscription(t *testing.T) {
+	bot, api, repository := newTestBot(t)
+	message := &telegramMessage{
+		MessageID: 1, Chat: telegramChat{ID: 1001, Type: "private"},
+		From: &telegramUser{ID: 1001, FirstName: "Subscriber"},
+		Text: "correct-horse-battery-staple",
+	}
+	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
+		t.Fatalf("password authentication: %v", err)
+	}
+	user := repository.users[1001]
+
+	message.MessageID = 2
+	message.Text = "/start"
+	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
+		t.Fatalf("/start: %v", err)
+	}
+	if !repository.spotSubscriptions[user.ID] {
+		t.Fatal("/start did not enable Spot alerts")
+	}
+	if !strings.Contains(api.sentMessages[len(api.sentMessages)-1], "Подписка на Spot-уведомления включена") {
+		t.Fatalf("/start did not confirm Spot subscription: %q", api.sentMessages[len(api.sentMessages)-1])
+	}
+
+	message.MessageID = 3
+	message.Text = "/stop"
+	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
+		t.Fatalf("/stop: %v", err)
+	}
+	if repository.spotSubscriptions[user.ID] {
+		t.Fatal("/stop did not disable Spot alerts")
+	}
+	if !strings.Contains(api.sentMessages[len(api.sentMessages)-1], "RSI-уведомления") {
+		t.Fatalf("/stop did not explain that RSI alerts are unchanged: %q", api.sentMessages[len(api.sentMessages)-1])
 	}
 }
 
@@ -396,5 +470,25 @@ func TestFormatDeliveryPreservesHigherTimeframeTrend(t *testing.T) {
 	})
 	if !strings.Contains(message, "Тренд старшего ТФ (4h): 📉 НИСХОДЯЩИЙ ТРЕНД") {
 		t.Fatalf("formatted delivery lost higher-timeframe trend: %s", message)
+	}
+}
+
+func TestFormatSpotAlertIncludesMomentumDetails(t *testing.T) {
+	message := formatSpotAlert(storage.SpotAlertDelivery{
+		Symbol: "ABCUSDT", Price: 1.2345, ReferencePrice: 1.1,
+		ChangePercent: 12.2272, WindowSeconds: 900,
+		DetectedAt: time.Date(2026, 11, 8, 12, 30, 45, 0, time.UTC),
+	})
+	for _, expected := range []string{
+		"Spot: рост более 5% за 15 мин.",
+		"ABCUSDT",
+		"Изменение: +12.23%",
+		"Текущая цена: 1.2345",
+		"Цена в начале окна: 1.1",
+		"2026-11-08 12:30:45 UTC",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("formatted Spot alert does not contain %q: %s", expected, message)
+		}
 	}
 }

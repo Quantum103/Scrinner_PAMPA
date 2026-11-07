@@ -36,6 +36,11 @@ type Repository interface {
 	ClaimPendingDeliveries(context.Context, int, time.Duration) ([]storage.Delivery, error)
 	MarkDeliverySent(context.Context, int64, int64) error
 	MarkDeliveryFailed(context.Context, int64, int64, time.Time, error) error
+	SubscribeSpotAlerts(context.Context, int64) error
+	UnsubscribeSpotAlerts(context.Context, int64) error
+	ClaimPendingSpotAlertDeliveries(context.Context, int, time.Duration) ([]storage.SpotAlertDelivery, error)
+	MarkSpotAlertDeliverySent(context.Context, int64, int64) error
+	MarkSpotAlertDeliveryFailed(context.Context, int64, int64, time.Time, error) error
 }
 
 type telegramAPI interface {
@@ -121,6 +126,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	b.logger.Info("Telegram bot identity verified", "username", me.Username, "telegram_id", me.ID)
 
 	go b.runDeliveryWorker(ctx)
+	go b.runSpotAlertDeliveryWorker(ctx)
 	b.logger.Info("Telegram bot polling started", "access", "shared-password")
 
 	var offset int64
@@ -197,9 +203,20 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegramMessage) error
 	arguments := fields[1:]
 
 	switch command {
-	case "start", "menu":
+	case "start":
+		if err := b.repository.SubscribeSpotAlerts(ctx, user.ID); err != nil {
+			return fmt.Errorf("subscribe Telegram user to Spot alerts: %w", err)
+		}
 		return b.sendMenu(ctx, message.Chat.ID,
-			"Привет, "+displayName(user)+". Это RSI Scanner для Bybit USDT Perpetual.")
+			"Привет, "+displayName(user)+". Это RSI Scanner для Bybit USDT Perpetual.\n\nПодписка на Spot-уведомления включена. Для отключения отправьте /stop.")
+	case "menu":
+		return b.sendMenu(ctx, message.Chat.ID, "Главное меню RSI Scanner")
+	case "stop":
+		if err := b.repository.UnsubscribeSpotAlerts(ctx, user.ID); err != nil {
+			return fmt.Errorf("unsubscribe Telegram user from Spot alerts: %w", err)
+		}
+		return b.api.sendMessage(ctx, message.Chat.ID,
+			"Подписка на Spot-уведомления отключена. RSI-уведомления и их настройки не изменены.", nil)
 	case "signals":
 		return b.showHistory(ctx, message.Chat.ID, user.ID, 0, 0)
 	case "history":
@@ -281,7 +298,8 @@ func (b *Bot) handlePasswordAuthentication(ctx context.Context, message *telegra
 		}
 		user.IsActive = true
 	}
-	return b.sendMenu(ctx, message.Chat.ID, "Пароль принят. Доступ открыт. Привет, "+displayName(user)+"!")
+	return b.sendMenu(ctx, message.Chat.ID,
+		"Пароль принят. Доступ открыт. Привет, "+displayName(user)+"!\n\nЧтобы включить уведомления о росте Spot-монет, отправьте /start.")
 }
 
 func (b *Bot) passwordRetryAfter(telegramID int64) time.Duration {
@@ -631,6 +649,64 @@ func (b *Bot) render(ctx context.Context, chatID, messageID int64, message strin
 	return b.api.sendMessage(ctx, chatID, message, keyboard)
 }
 
+func (b *Bot) runSpotAlertDeliveryWorker(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		deliveries, err := b.repository.ClaimPendingSpotAlertDeliveries(ctx, deliveryBatchSize, deliveryLease)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			b.logger.Error("claim Telegram Spot alert deliveries failed", "error", err)
+		} else {
+			for _, delivery := range deliveries {
+				if ctx.Err() != nil {
+					return
+				}
+				b.deliverSpotAlert(ctx, delivery)
+				if !wait(ctx, 50*time.Millisecond) {
+					return
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (b *Bot) deliverSpotAlert(ctx context.Context, delivery storage.SpotAlertDelivery) {
+	sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err := b.api.sendMessage(sendCtx, delivery.TelegramID, formatSpotAlert(delivery), nil)
+	cancel()
+
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer persistCancel()
+	if err == nil {
+		if markErr := b.repository.MarkSpotAlertDeliverySent(persistCtx, delivery.UserID, delivery.AlertID); markErr != nil {
+			b.logger.Error("mark Telegram Spot alert delivery as sent failed",
+				"user_id", delivery.UserID, "alert_id", delivery.AlertID, "error", markErr)
+		}
+		return
+	}
+	nextAttempt := time.Now().Add(deliveryRetryDelay(delivery.AttemptCount))
+	if markErr := b.repository.MarkSpotAlertDeliveryFailed(persistCtx, delivery.UserID, delivery.AlertID, nextAttempt, err); markErr != nil {
+		b.logger.Error("mark Telegram Spot alert delivery as failed",
+			"user_id", delivery.UserID, "alert_id", delivery.AlertID,
+			"send_error", err, "storage_error", markErr)
+		return
+	}
+	b.logger.Warn("Telegram Spot alert delivery failed; retry scheduled",
+		"user_id", delivery.UserID, "alert_id", delivery.AlertID,
+		"attempt", delivery.AttemptCount, "retry_at", nextAttempt, "error", err)
+}
+
 func (b *Bot) runDeliveryWorker(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -778,6 +854,19 @@ func formatMarketContext(signal storage.Signal) string {
 	return message
 }
 
+func formatSpotAlert(delivery storage.SpotAlertDelivery) string {
+	window := time.Duration(delivery.WindowSeconds) * time.Second
+	windowLabel := window.String()
+	if delivery.WindowSeconds > 0 && delivery.WindowSeconds%60 == 0 {
+		windowLabel = fmt.Sprintf("%d мин.", delivery.WindowSeconds/60)
+	}
+	return fmt.Sprintf(
+		"🚀 Spot: рост более 5%% за %s\n\n%s\nИзменение: %+.2f%%\nТекущая цена: %s\nЦена в начале окна: %s\nОбнаружено: %s UTC",
+		windowLabel, delivery.Symbol, delivery.ChangePercent, formatPrice(delivery.Price),
+		formatPrice(delivery.ReferencePrice), delivery.DetectedAt.UTC().Format("2006-01-02 15:04:05"),
+	)
+}
+
 func formatDelivery(delivery storage.Delivery) string {
 	return "Новый RSI-сигнал\n\n" + formatSignal(storage.Signal{
 		Symbol:             delivery.Symbol,
@@ -860,5 +949,5 @@ func wait(ctx context.Context, duration time.Duration) bool {
 
 const (
 	authPromptText = "Для доступа к RSI Scanner отправьте общий пароль отдельным сообщением в этот личный чат. После проверки парольное сообщение будет удалено."
-	helpText       = "RSI Scanner отслеживает пересечения RSI и EMA RSI на закрытых свечах Bybit USDT Perpetual.\n\n/start — главное меню\n/signals — последние сигналы\n/history — история сигналов\n/settings — настройки и фильтры\n/instruments — ручные правила инструментов\n/include BTCUSDT — включить инструмент\n/exclude BTCUSDT — исключить инструмент\n/reset BTCUSDT — удалить правило"
+	helpText       = "RSI Scanner отслеживает пересечения RSI и EMA RSI на закрытых свечах Bybit USDT Perpetual.\n\n/start — главное меню и подписка на Spot-уведомления\n/stop — отключить Spot-уведомления\n/signals — последние сигналы\n/history — история сигналов\n/settings — настройки и фильтры RSI\n/instruments — ручные правила инструментов\n/include BTCUSDT — включить инструмент\n/exclude BTCUSDT — исключить инструмент\n/reset BTCUSDT — удалить правило"
 )

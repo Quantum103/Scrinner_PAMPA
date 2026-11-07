@@ -158,6 +158,7 @@ func (c *apiClient) setMyCommands(ctx context.Context) error {
 		{"command": "settings", "description": "Настройки сканера"},
 		{"command": "instruments", "description": "Мои исключения и включения"},
 		{"command": "help", "description": "Справка"},
+		{"command": "stop", "description": "Отключить Spot-уведомления"},
 	}
 	return c.call(ctx, "setMyCommands", map[string]any{"commands": commands}, nil)
 }

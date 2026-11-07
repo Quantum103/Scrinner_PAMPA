@@ -37,6 +37,7 @@ type App struct {
 	spotPublicStream *bybit.PublicSpotStream
 	momentumTracker  *momentum.Tracker
 	telegramBot      *telegrambot.Bot
+	spotAlertEvents  chan storage.SpotMomentumAlert
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -146,6 +147,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		publicStream: publicStream, spotRESTClient: restClient,
 		spotSynchronizer: spotSynchronizer, spotPublicStream: spotPublicStream,
 		momentumTracker: momentumTracker, telegramBot: telegramBotInstance,
+		spotAlertEvents: make(chan storage.SpotMomentumAlert, 1000),
 	}, nil
 }
 
@@ -153,6 +155,7 @@ func (a *App) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go a.runSpotMonitor(runCtx)
+	go a.runSpotAlertPersistence(runCtx)
 	if a.telegramBot != nil {
 		go func() {
 			if err := a.telegramBot.Run(runCtx); err != nil && runCtx.Err() == nil {
@@ -294,6 +297,55 @@ func (a *App) runSpotMonitor(ctx context.Context) {
 	}
 }
 
+// runSpotAlertPersistence stores each crossing and atomically creates deliveries
+// for all active Telegram subscribers. Failed database writes are retried.
+func (a *App) runSpotAlertPersistence(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case alert := <-a.spotAlertEvents:
+			retryDelay := time.Second
+			for attempt := 1; ; attempt++ {
+				saveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				alertID, inserted, queued, err := a.storage.SaveSpotMomentumAlert(saveCtx, alert)
+				cancel()
+				if err == nil {
+					if inserted {
+						a.logger.Info("Spot momentum alert persisted",
+							"alert_id", alertID, "symbol", alert.Symbol,
+							"change_percent", alert.ChangePercent, "deliveries_queued", queued)
+					}
+					break
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				a.logger.Error("persist Spot momentum alert failed; retry scheduled",
+					"symbol", alert.Symbol, "attempt", attempt, "error", err)
+				if !waitForSpotPersistenceRetry(ctx, retryDelay) {
+					return
+				}
+				retryDelay *= 2
+				if retryDelay > 30*time.Second {
+					retryDelay = 30 * time.Second
+				}
+			}
+		}
+	}
+}
+
+func waitForSpotPersistenceRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 func (a *App) startSpotStreams(parent context.Context, symbols []string) func() {
 	streamCtx, cancel := context.WithCancel(parent)
 	var wait sync.WaitGroup
@@ -315,14 +367,17 @@ func (a *App) startSpotStreams(parent context.Context, symbols []string) func() 
 						return err
 					}
 					if signal != nil {
-						a.logger.Info("Spot momentum threshold crossed",
-							"symbol", signal.Symbol,
-							"change_percent", signal.ChangePercent,
-							"current_price", signal.Price,
-							"reference_price", signal.ReferencePrice,
-							"reference_at", signal.ReferenceAt,
-							"detected_at", signal.At,
-							"window", momentum.DefaultWindow.String())
+						alert := storage.SpotMomentumAlert{
+							Symbol: signal.Symbol, DetectedAt: signal.At, ReferenceAt: signal.ReferenceAt,
+							Price: signal.Price, ReferencePrice: signal.ReferencePrice,
+							ChangePercent: signal.ChangePercent,
+							WindowSeconds: int(momentum.DefaultWindow / time.Second),
+						}
+						select {
+						case a.spotAlertEvents <- alert:
+						case <-streamCtx.Done():
+							return streamCtx.Err()
+						}
 					}
 					return nil
 				},

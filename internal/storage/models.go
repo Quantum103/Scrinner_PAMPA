@@ -125,6 +125,33 @@ type Delivery struct {
 	DetectedAt time.Time
 }
 
+// SpotMomentumAlert is a Spot market move detected by the rolling price tracker.
+type SpotMomentumAlert struct {
+	ID             int64
+	Symbol         string
+	DetectedAt     time.Time
+	ReferenceAt    time.Time
+	Price          float64
+	ReferencePrice float64
+	ChangePercent  float64
+	WindowSeconds  int
+}
+
+// SpotAlertDelivery is one durable Spot alert notification assigned to a Telegram user.
+type SpotAlertDelivery struct {
+	UserID         int64
+	TelegramID     int64
+	AlertID        int64
+	AttemptCount   int
+	Symbol         string
+	DetectedAt     time.Time
+	ReferenceAt    time.Time
+	Price          float64
+	ReferencePrice float64
+	ChangePercent  float64
+	WindowSeconds  int
+}
+
 // SignalFilters limits a user's signal history.
 type SignalFilters struct {
 	Symbol    string
