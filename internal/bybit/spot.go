@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
-	"time"
 	"strings"
+	"time"
 )
 
 // SpotInstrument describes an active Bybit Spot trading pair.

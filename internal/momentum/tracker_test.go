@@ -127,7 +127,7 @@ func TestTrackerKeepsSymbolsAndCoalescesSameSecond(t *testing.T) {
 	start := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 5; i++ {
 		if _, err := tracker.Add("AAAUSDT", PricePoint{
-			At: start.Add(time.Duration(i) * 100 * time.Millisecond),
+			At:    start.Add(time.Duration(i) * 100 * time.Millisecond),
 			Price: 1 + float64(i)/100,
 		}); err != nil {
 			t.Fatal(err)
