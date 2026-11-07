@@ -113,9 +113,9 @@ func (r *Repository) SyncSpotCatalog(
 	SELECT
 		symbol,
 		CASE WHEN turnover_24h <= $1::numeric THEN 'watching' ELSE 'over_limit_hold' END,
-		CASE WHEN turnover_24h <= $1::numeric THEN NULL ELSE $2 END,
+		CASE WHEN turnover_24h <= $1::numeric THEN NULL ELSE $2::timestamptz END,
 		NULL,
-		$2
+		$2::timestamptz
 	FROM spot_instruments
 	WHERE is_active = TRUE
 	ON CONFLICT (symbol) DO UPDATE SET
@@ -123,22 +123,22 @@ func (r *Repository) SyncSpotCatalog(
 			WHEN EXCLUDED.state = 'watching' THEN 'watching'
 			WHEN spot_watchlist.state = 'excluded' THEN 'excluded'
 			WHEN spot_watchlist.over_limit_since IS NOT NULL
-			 AND spot_watchlist.over_limit_since + ($3 * interval '1 second') <= $2 THEN 'excluded'
+			 AND spot_watchlist.over_limit_since + ($3::double precision * interval '1 second') <= $2::timestamptz THEN 'excluded'
 			ELSE 'over_limit_hold'
 		END,
 		over_limit_since = CASE
 			WHEN EXCLUDED.state = 'watching' THEN NULL
-			WHEN spot_watchlist.over_limit_since IS NULL THEN $2
+			WHEN spot_watchlist.over_limit_since IS NULL THEN $2::timestamptz
 			ELSE spot_watchlist.over_limit_since
 		END,
 		excluded_at = CASE
 			WHEN EXCLUDED.state = 'watching' THEN NULL
 			WHEN spot_watchlist.state = 'excluded' THEN spot_watchlist.excluded_at
 			WHEN spot_watchlist.over_limit_since IS NOT NULL
-			 AND spot_watchlist.over_limit_since + ($3 * interval '1 second') <= $2 THEN $2
+			 AND spot_watchlist.over_limit_since + ($3::double precision * interval '1 second') <= $2::timestamptz THEN $2::timestamptz
 			ELSE NULL
 		END,
-		updated_at = $2`, turnoverLimitText, now.UTC(), overLimitHold.Seconds())
+		updated_at = $2::timestamptz`, turnoverLimitText, now.UTC(), overLimitHold.Seconds())
 	if err != nil {
 		return fmt.Errorf("reconcile Spot Watchlist: %w", err)
 	}
