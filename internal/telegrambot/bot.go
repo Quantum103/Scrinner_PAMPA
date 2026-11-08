@@ -395,7 +395,6 @@ func clearHistoryKeyboard() *inlineKeyboard {
 	}}
 }
 
-
 func (b *Bot) showRules(ctx context.Context, chatID, userID, messageID int64) error {
 	rules, err := b.repository.ListSpotAlertRules(ctx, userID)
 	if err != nil {

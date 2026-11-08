@@ -246,8 +246,8 @@ func TestTrackerSupportsMultipleIndependentRules(t *testing.T) {
 	}
 	want := map[Rule]bool{
 		{Window: time.Minute, ThresholdPercent: 1}:       false,
-		{Window: 5 * time.Minute, ThresholdPercent: 3}:    false,
-		{Window: 10 * time.Minute, ThresholdPercent: 10}:  false,
+		{Window: 5 * time.Minute, ThresholdPercent: 3}:   false,
+		{Window: 10 * time.Minute, ThresholdPercent: 10}: false,
 	}
 	for _, signal := range signals {
 		rule := Rule{Window: signal.Window, ThresholdPercent: signal.ThresholdPercent}

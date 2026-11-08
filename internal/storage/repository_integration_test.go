@@ -54,8 +54,8 @@ func createTestUser(t *testing.T, repository *Repository) TelegramUser {
 	t.Helper()
 	user, err := repository.EnsureTelegramUser(context.Background(), TelegramUser{
 		TelegramID: time.Now().UnixNano(),
-		Username: "spot_test",
-		FirstName: "Test",
+		Username:   "spot_test",
+		FirstName:  "Test",
 	})
 	if err != nil {
 		t.Fatalf("ensure Telegram user: %v", err)

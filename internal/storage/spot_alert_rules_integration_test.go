@@ -44,7 +44,7 @@ func TestSpotAlertRulesArePersonalAndTargetOnlyMatchingUsers(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	alert := SpotMomentumAlert{
-		Symbol: "RULE" + uniqueSuffix() + "USDT",
+		Symbol:     "RULE" + uniqueSuffix() + "USDT",
 		DetectedAt: now, ReferenceAt: now.Add(-5 * time.Minute),
 		Price: 1.035, ReferencePrice: 1, ChangePercent: 3.5,
 		ThresholdPercent: 3, WindowSeconds: 5 * 60,
@@ -129,7 +129,7 @@ func TestDeletingSpotRuleCancelsItsPendingDeliveries(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	alert := SpotMomentumAlert{
-		Symbol: "CANCEL" + uniqueSuffix() + "USDT",
+		Symbol:     "CANCEL" + uniqueSuffix() + "USDT",
 		DetectedAt: now, ReferenceAt: now.Add(-5 * time.Minute),
 		Price: 1.04, ReferencePrice: 1, ChangePercent: 4,
 		ThresholdPercent: 3, WindowSeconds: 300,

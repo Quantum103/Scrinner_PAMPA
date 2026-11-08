@@ -187,7 +187,7 @@ func (a *App) runSpotMonitor(ctx context.Context) {
 		configured := make([]momentum.Rule, 0, len(rules))
 		for _, rule := range rules {
 			configured = append(configured, momentum.Rule{
-				Window: time.Duration(rule.WindowSeconds) * time.Second,
+				Window:           time.Duration(rule.WindowSeconds) * time.Second,
 				ThresholdPercent: rule.ThresholdPercent,
 			})
 		}

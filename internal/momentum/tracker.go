@@ -19,7 +19,7 @@ const (
 )
 
 type Rule struct {
-	Window          time.Duration
+	Window           time.Duration
 	ThresholdPercent float64
 }
 
@@ -29,13 +29,13 @@ type PricePoint struct {
 }
 
 type Signal struct {
-	Symbol          string
-	At              time.Time
-	Price           float64
-	ReferenceAt     time.Time
-	ReferencePrice  float64
-	ChangePercent   float64
-	Window          time.Duration
+	Symbol           string
+	At               time.Time
+	Price            float64
+	ReferenceAt      time.Time
+	ReferencePrice   float64
+	ChangePercent    float64
+	Window           time.Duration
 	ThresholdPercent float64
 }
 

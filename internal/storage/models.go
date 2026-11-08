@@ -39,14 +39,14 @@ type SpotAlertDelivery struct {
 	TelegramID       int64
 	AlertID          int64
 	AttemptCount     int
-	Symbol            string
-	DetectedAt        time.Time
-	ReferenceAt       time.Time
-	Price             float64
-	ReferencePrice    float64
-	ChangePercent     float64
-	ThresholdPercent  float64
-	WindowSeconds     int
+	Symbol           string
+	DetectedAt       time.Time
+	ReferenceAt      time.Time
+	Price            float64
+	ReferencePrice   float64
+	ChangePercent    float64
+	ThresholdPercent float64
+	WindowSeconds    int
 }
 
 type SpotAlertHistoryItem struct {
