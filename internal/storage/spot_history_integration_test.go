@@ -27,8 +27,12 @@ func TestClearUserSpotHistoryPreservesOtherUsersAndSubscriptions(t *testing.T) {
 	if err != nil || !inserted || queued != 2 {
 		t.Fatalf("save shared alert: id=%d inserted=%t queued=%d err=%v", alertID, inserted, queued, err)
 	}
-	for _, user := range []TelegramUser{first, second} {
-		if err := repository.MarkSpotAlertDeliverySent(ctx, user.ID, alertID); err != nil {
+	claimed, err := repository.ClaimPendingSpotAlertDeliveries(ctx, 10, time.Minute)
+	if err != nil || len(claimed) != 2 {
+		t.Fatalf("claim both shared alert deliveries: claimed=%+v err=%v", claimed, err)
+	}
+	for _, delivery := range claimed {
+		if err := repository.MarkSpotAlertDeliverySent(ctx, delivery.UserID, alertID); err != nil {
 			t.Fatal(err)
 		}
 	}
