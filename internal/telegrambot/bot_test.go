@@ -154,7 +154,7 @@ func TestClearHistoryRequiresExplicitConfirmation(t *testing.T) {
 	callback := &telegramCallback{
 		ID: "callback", From: &telegramUser{ID: 42},
 		Message: &telegramMessage{MessageID: 7, Chat: telegramChat{ID: 42, Type: "private"}},
-		Data: "clear_history:confirm",
+		Data:    "clear_history:confirm",
 	}
 	if err := bot.handleCallback(context.Background(), callback); err != nil {
 		t.Fatal(err)

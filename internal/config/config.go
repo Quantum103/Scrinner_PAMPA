@@ -47,19 +47,19 @@ type TelegramConfig struct {
 func Load() (Config, error) {
 	cfg := Config{
 		App: AppConfig{
-			LogLevel: strings.ToLower(env("APP_LOG_LEVEL", "info")),
-			HTTPAddr: env("APP_HTTP_ADDR", ":8080"),
-			MigrationsDir: env("MIGRATIONS_DIR", "./migrations"),
-			DataDir: env("APP_DATA_DIR", "./data"),
+			LogLevel:        strings.ToLower(env("APP_LOG_LEVEL", "info")),
+			HTTPAddr:        env("APP_HTTP_ADDR", ":8080"),
+			MigrationsDir:   env("MIGRATIONS_DIR", "./migrations"),
+			DataDir:         env("APP_DATA_DIR", "./data"),
 			ShutdownTimeout: 10 * time.Second,
 		},
 		Database: DatabaseConfig{
-			URL: env("DATABASE_URL", "postgres://spot_scanner:change_me@localhost:5432/spot_scanner?sslmode=disable"),
+			URL:      env("DATABASE_URL", "postgres://spot_scanner:change_me@localhost:5432/spot_scanner?sslmode=disable"),
 			MaxConns: 20,
 			MinConns: 2,
 		},
 		Bybit: BybitConfig{
-			RESTURL: env("BYBIT_REST_URL", "https://api.bybit.com"),
+			RESTURL:         env("BYBIT_REST_URL", "https://api.bybit.com"),
 			SpotPublicWSURL: env("BYBIT_PUBLIC_SPOT_WS_URL", "wss://stream.bybit.com/v5/public/spot"),
 		},
 		Spot: SpotConfig{MarketRefreshInterval: time.Minute},
