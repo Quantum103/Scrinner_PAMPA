@@ -46,6 +46,7 @@ func (f *fakeTelegramAPI) setMyCommands(context.Context) error { return nil }
 type fakeTelegramRepository struct {
 	users      map[int64]storage.TelegramUser
 	subs       map[int64]bool
+	rules      []storage.SpotAlertRule
 	clearCalls int
 }
 
@@ -82,6 +83,56 @@ func (f *fakeTelegramRepository) GetUserByTelegramID(_ context.Context, telegram
 }
 func (f *fakeTelegramRepository) SubscribeSpotAlerts(_ context.Context, userID int64) error {
 	f.subs[userID] = true
+	if len(f.rules) == 0 {
+		f.rules = append(f.rules, storage.SpotAlertRule{
+			ID: 1, UserID: userID, ThresholdPercent: 5, WindowSeconds: 900,
+		})
+	}
+	return nil
+}
+func (f *fakeTelegramRepository) AddSpotAlertRule(_ context.Context, userID int64, threshold float64, windowSeconds int) (storage.SpotAlertRule, bool, error) {
+	for _, rule := range f.rules {
+		if rule.UserID == userID && rule.ThresholdPercent == threshold && rule.WindowSeconds == windowSeconds {
+			return rule, false, nil
+		}
+	}
+	var nextID int64 = 1
+	for _, rule := range f.rules {
+		if rule.ID >= nextID {
+			nextID = rule.ID + 1
+		}
+	}
+	rule := storage.SpotAlertRule{ID: nextID, UserID: userID, ThresholdPercent: threshold, WindowSeconds: windowSeconds}
+	f.rules = append(f.rules, rule)
+	return rule, true, nil
+}
+func (f *fakeTelegramRepository) ListSpotAlertRules(_ context.Context, userID int64) ([]storage.SpotAlertRule, error) {
+	result := make([]storage.SpotAlertRule, 0)
+	for _, rule := range f.rules {
+		if rule.UserID == userID {
+			result = append(result, rule)
+		}
+	}
+	return result, nil
+}
+func (f *fakeTelegramRepository) DeleteSpotAlertRule(_ context.Context, userID, ruleID int64) error {
+	index := -1
+	count := 0
+	for i, rule := range f.rules {
+		if rule.UserID == userID {
+			count++
+			if rule.ID == ruleID {
+				index = i
+			}
+		}
+	}
+	if index < 0 {
+		return storage.ErrNotFound
+	}
+	if count <= 1 {
+		return storage.ErrLastSpotAlertRule
+	}
+	f.rules = append(f.rules[:index], f.rules[index+1:]...)
 	return nil
 }
 func (f *fakeTelegramRepository) UnsubscribeSpotAlerts(_ context.Context, userID int64) error {
@@ -186,7 +237,7 @@ func TestPasswordMessageIsDeletedAndNotEchoed(t *testing.T) {
 
 func TestSpotAlertFormattingAndPermanentDeliveryErrors(t *testing.T) {
 	message := formatSpotMovement(
-		"ABCUSDT", 7.25, 1.08, 1,
+		"ABCUSDT", 7.25, 5, 1.08, 1,
 		time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC), 900,
 	)
 	for _, part := range []string{"ABCUSDT", "+7.25%", "15 мин.", "1.08"} {
@@ -199,5 +250,81 @@ func TestSpotAlertFormattingAndPermanentDeliveryErrors(t *testing.T) {
 	}
 	if isPermanentTelegramDeliveryError(errors.New("network timeout")) {
 		t.Fatal("network timeout must remain retryable")
+	}
+}
+
+func TestUserCanAddViewAndRemoveMultipleSpotRules(t *testing.T) {
+	api := &fakeTelegramAPI{}
+	repository := newFakeTelegramRepository()
+	user := storage.TelegramUser{ID: 1, TelegramID: 42, IsActive: true, FirstName: "Test"}
+	repository.users[user.TelegramID] = user
+	bot, err := newWithAPI(api, "long-enough-password", repository, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	message := &telegramMessage{
+		MessageID: 10, From: &telegramUser{ID: 42},
+		Chat: telegramChat{ID: 42, Type: "private"}, Text: "/add 3 5",
+	}
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	message.Text = "/add 1 1"
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := repository.ListSpotAlertRules(context.Background(), user.ID)
+	if err != nil || len(rules) != 2 {
+		t.Fatalf("rules after add: %+v err=%v", rules, err)
+	}
+	message.Text = "/rules"
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.sentMessages) < 3 ||
+		!strings.Contains(api.sentMessages[2], "3% за 5 мин.") ||
+		!strings.Contains(api.sentMessages[2], "1% за 1 мин.") {
+		t.Fatalf("rules list does not display each rule: %v", api.sentMessages)
+	}
+
+	message.Text = "/remove 1"
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	rules, err = repository.ListSpotAlertRules(context.Background(), user.ID)
+	if err != nil || len(rules) != 1 || rules[0].ID != 2 {
+		t.Fatalf("rules after removal: %+v err=%v", rules, err)
+	}
+	message.Text = "/remove 2"
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(api.sentMessages[len(api.sentMessages)-1], "последнее правило") {
+		t.Fatalf("removing last rule should be refused: %v", api.sentMessages)
+	}
+}
+
+func TestRuleCommandRejectsInvalidWindowAndThreshold(t *testing.T) {
+	api := &fakeTelegramAPI{}
+	repository := newFakeTelegramRepository()
+	repository.users[42] = storage.TelegramUser{ID: 1, TelegramID: 42, IsActive: true}
+	bot, err := newWithAPI(api, "long-enough-password", repository, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := &telegramMessage{
+		From: &telegramUser{ID: 42}, Chat: telegramChat{ID: 42, Type: "private"},
+		Text: "/add 0 5",
+	}
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	message.Text = "/add 3 61"
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.rules) != 0 {
+		t.Fatalf("invalid rules were stored: %+v", repository.rules)
 	}
 }

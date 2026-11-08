@@ -22,7 +22,7 @@ func TestSpotAlertSubscriptionsAndDurableDelivery(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	alert := SpotMomentumAlert{
 		Symbol: "TST" + uniqueSuffix() + "USDT", DetectedAt: now, ReferenceAt: now.Add(-15 * time.Minute),
-		Price: 1.08, ReferencePrice: 1, ChangePercent: 8,
+		Price: 1.08, ReferencePrice: 1, ChangePercent: 8, ThresholdPercent: 5,
 		WindowSeconds: 900,
 	}
 	alertID, inserted, queued, err := repository.SaveSpotMomentumAlert(ctx, alert)
@@ -123,7 +123,7 @@ func TestSpotAlertRejectsInvalidDataAndInactiveSubscriber(t *testing.T) {
 	now := time.Now().UTC()
 	_, _, _, err := repository.SaveSpotMomentumAlert(ctx, SpotMomentumAlert{
 		Symbol: "BAD SYMBOL", DetectedAt: now, ReferenceAt: now.Add(-time.Minute),
-		Price: 2, ReferencePrice: 1, ChangePercent: 100, WindowSeconds: 60,
+		Price: 2, ReferencePrice: 1, ChangePercent: 100, ThresholdPercent: 5, WindowSeconds: 60,
 	})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("invalid Spot alert error = %v", err)
@@ -141,7 +141,7 @@ func TestSpotAlertDeliveryLeaseCanBeRecoveredAfterWorkerRestart(t *testing.T) {
 	alert := SpotMomentumAlert{
 		Symbol:     "LEASE" + uniqueSuffix() + "USDT",
 		DetectedAt: now, ReferenceAt: now.Add(-15 * time.Minute),
-		Price: 1.1, ReferencePrice: 1, ChangePercent: 10, WindowSeconds: 900,
+		Price: 1.1, ReferencePrice: 1, ChangePercent: 10, ThresholdPercent: 5, WindowSeconds: 900,
 	}
 	alertID, inserted, _, err := repository.SaveSpotMomentumAlert(ctx, alert)
 	if err != nil || !inserted {

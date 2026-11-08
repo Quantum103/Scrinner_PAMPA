@@ -21,7 +21,7 @@ func TestClearUserSpotHistoryPreservesOtherUsersAndSubscriptions(t *testing.T) {
 	alert := SpotMomentumAlert{
 		Symbol:     "CLEAR" + uniqueSuffix() + "USDT",
 		DetectedAt: now, ReferenceAt: now.Add(-15 * time.Minute),
-		Price: 1.1, ReferencePrice: 1, ChangePercent: 10, WindowSeconds: 900,
+		Price: 1.1, ReferencePrice: 1, ChangePercent: 10, ThresholdPercent: 5, WindowSeconds: 900,
 	}
 	alertID, inserted, queued, err := repository.SaveSpotMomentumAlert(ctx, alert)
 	if err != nil || !inserted || queued != 2 {

@@ -82,7 +82,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		pool.Close()
 		return nil, fmt.Errorf("initialize Bybit Spot public WebSocket: %w", err)
 	}
-	momentumTracker, err := momentum.NewTracker(momentum.DefaultWindow, momentum.DefaultThresholdPercent, momentum.DefaultMaxReferenceAge)
+	momentumTracker, err := momentum.NewRuleTracker(momentum.DefaultMaxReferenceAge)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("initialize Spot momentum tracker: %w", err)
@@ -167,13 +167,36 @@ func (a *App) Run(ctx context.Context) error {
 
 const (
 	spotSubscriptionShardSize = 100
-	spotHistoryCandleLimit    = 20
+	spotHistoryCandleLimit    = 62 // Covers the maximum 60-minute rule plus a reference candle.
 	spotHistoryWorkers        = 8
+	spotRuleRefreshInterval   = 5 * time.Second
 )
 
 func (a *App) runSpotMonitor(ctx context.Context) {
 	ticker := time.NewTicker(a.config.Spot.MarketRefreshInterval)
 	defer ticker.Stop()
+	ruleTicker := time.NewTicker(spotRuleRefreshInterval)
+	defer ruleTicker.Stop()
+
+	refreshRules := func() {
+		rules, err := a.storage.ListActiveSpotAlertRules(ctx)
+		if err != nil {
+			a.logger.Error("load active Spot alert rules failed", "error", err)
+			return
+		}
+		configured := make([]momentum.Rule, 0, len(rules))
+		for _, rule := range rules {
+			configured = append(configured, momentum.Rule{
+				Window: time.Duration(rule.WindowSeconds) * time.Second,
+				ThresholdPercent: rule.ThresholdPercent,
+			})
+		}
+		if err := a.momentumTracker.SetRules(configured); err != nil {
+			a.logger.Error("apply active Spot alert rules failed", "error", err)
+			return
+		}
+		a.logger.Debug("active Spot alert rules refreshed", "unique_rules", a.momentumTracker.RuleCount())
+	}
 
 	seedResults := make(chan []string, 1)
 	seedInFlight := make(map[string]struct{})
@@ -237,6 +260,7 @@ func (a *App) runSpotMonitor(ctx context.Context) {
 			"over_limit_hold", stats.OverLimitHold, "history_seed_pending", len(seedInFlight))
 	}
 
+	refreshRules()
 	refresh()
 	for {
 		select {
@@ -247,6 +271,8 @@ func (a *App) runSpotMonitor(ctx context.Context) {
 			return
 		case <-ticker.C:
 			refresh()
+		case <-ruleTicker.C:
+			refreshRules()
 		case completed := <-seedResults:
 			for _, symbol := range completed {
 				delete(seedInFlight, symbol)
@@ -344,27 +370,29 @@ func (a *App) startSpotStreams(parent context.Context, symbols []string) func() 
 			defer waitGroup.Done()
 			err := a.spotPublicStream.Run(streamCtx, shard, bybit.SpotStreamHandlers{
 				OnTicker: func(_ context.Context, update bybit.SpotPriceUpdate) error {
-					signal, err := a.momentumTracker.Add(update.Symbol, momentum.PricePoint{At: update.At, Price: update.Price})
+					signals, err := a.momentumTracker.AddAll(update.Symbol, momentum.PricePoint{At: update.At, Price: update.Price})
 					if err != nil {
 						return err
 					}
-					if signal == nil {
-						return nil
-					}
-					alert := storage.SpotMomentumAlert{
-						Symbol: signal.Symbol, DetectedAt: signal.At, ReferenceAt: signal.ReferenceAt,
-						Price: signal.Price, ReferencePrice: signal.ReferencePrice,
-						ChangePercent: signal.ChangePercent,
-						WindowSeconds: int(momentum.DefaultWindow / time.Second),
-					}
-					if err := a.spotAlertSpool.Append(alert); err != nil {
-						a.momentumTracker.Rearm(update.Symbol)
-						a.logger.Error("append Spot alert to durable spool failed", "symbol", signal.Symbol, "error", err)
-						return err
-					}
-					select {
-					case a.spotAlertEvents <- struct{}{}:
-					default:
+					for _, signal := range signals {
+						rule := momentum.Rule{Window: signal.Window, ThresholdPercent: signal.ThresholdPercent}
+						alert := storage.SpotMomentumAlert{
+							Symbol: signal.Symbol, DetectedAt: signal.At, ReferenceAt: signal.ReferenceAt,
+							Price: signal.Price, ReferencePrice: signal.ReferencePrice,
+							ChangePercent: signal.ChangePercent, ThresholdPercent: signal.ThresholdPercent,
+							WindowSeconds: int(signal.Window / time.Second),
+						}
+						if err := a.spotAlertSpool.Append(alert); err != nil {
+							a.momentumTracker.RearmRule(update.Symbol, rule)
+							a.logger.Error("append Spot alert to durable spool failed",
+								"symbol", signal.Symbol, "threshold_percent", signal.ThresholdPercent,
+								"window_seconds", alert.WindowSeconds, "error", err)
+							return err
+						}
+						select {
+						case a.spotAlertEvents <- struct{}{}:
+						default:
+						}
 					}
 					return nil
 				},

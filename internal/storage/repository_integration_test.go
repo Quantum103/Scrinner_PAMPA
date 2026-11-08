@@ -54,8 +54,8 @@ func createTestUser(t *testing.T, repository *Repository) TelegramUser {
 	t.Helper()
 	user, err := repository.EnsureTelegramUser(context.Background(), TelegramUser{
 		TelegramID: time.Now().UnixNano(),
-		Username:   "spot_test",
-		FirstName:  "Test",
+		Username: "spot_test",
+		FirstName: "Test",
 	})
 	if err != nil {
 		t.Fatalf("ensure Telegram user: %v", err)
@@ -100,7 +100,7 @@ func TestRSISchemaIsRemovedAndSpotSchemaRemains(t *testing.T) {
 	}
 	for _, table := range []string{
 		"spot_instruments", "spot_watchlist", "spot_momentum_alerts",
-		"spot_alert_subscriptions", "spot_alert_deliveries", "telegram_users",
+		"spot_alert_subscriptions", "spot_alert_deliveries", "spot_alert_rules", "telegram_users",
 	} {
 		var exists bool
 		if err := pool.QueryRow(ctx, "SELECT to_regclass('public.' || $1) IS NOT NULL", table).Scan(&exists); err != nil {

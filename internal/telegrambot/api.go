@@ -190,6 +190,9 @@ func (c *apiClient) setMyCommands(ctx context.Context) error {
 	commands := []map[string]string{
 		{"command": "start", "description": "Включить уведомления о росте"},
 		{"command": "stop", "description": "Отключить уведомления"},
+		{"command": "rules", "description": "Мои правила сигналов"},
+		{"command": "add", "description": "Добавить правило: /add 3 5"},
+		{"command": "remove", "description": "Удалить правило по ID"},
 		{"command": "history", "description": "История сигналов роста"},
 		{"command": "clearhistory", "description": "Очистить свою историю"},
 		{"command": "help", "description": "Справка"},

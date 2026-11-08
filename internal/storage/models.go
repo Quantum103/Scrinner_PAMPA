@@ -15,38 +15,48 @@ type TelegramUser struct {
 	LastSeenAt   time.Time
 }
 
+type SpotAlertRule struct {
+	ID               int64
+	UserID           int64
+	ThresholdPercent float64
+	WindowSeconds    int
+}
+
 type SpotMomentumAlert struct {
-	ID             int64
-	Symbol         string
-	DetectedAt     time.Time
-	ReferenceAt    time.Time
-	Price          float64
-	ReferencePrice float64
-	ChangePercent  float64
-	WindowSeconds  int
+	ID               int64
+	Symbol           string
+	DetectedAt       time.Time
+	ReferenceAt      time.Time
+	Price            float64
+	ReferencePrice   float64
+	ChangePercent    float64
+	ThresholdPercent float64
+	WindowSeconds    int
 }
 
 type SpotAlertDelivery struct {
-	UserID         int64
-	TelegramID     int64
-	AlertID        int64
-	AttemptCount   int
-	Symbol         string
-	DetectedAt     time.Time
-	ReferenceAt    time.Time
-	Price          float64
-	ReferencePrice float64
-	ChangePercent  float64
-	WindowSeconds  int
+	UserID           int64
+	TelegramID       int64
+	AlertID          int64
+	AttemptCount     int
+	Symbol            string
+	DetectedAt        time.Time
+	ReferenceAt       time.Time
+	Price             float64
+	ReferencePrice    float64
+	ChangePercent     float64
+	ThresholdPercent  float64
+	WindowSeconds     int
 }
 
 type SpotAlertHistoryItem struct {
-	ID             int64
-	Symbol         string
-	DetectedAt     time.Time
-	ReferenceAt    time.Time
-	Price          float64
-	ReferencePrice float64
-	ChangePercent  float64
-	WindowSeconds  int
+	ID               int64
+	Symbol           string
+	DetectedAt       time.Time
+	ReferenceAt      time.Time
+	Price            float64
+	ReferencePrice   float64
+	ChangePercent    float64
+	ThresholdPercent float64
+	WindowSeconds    int
 }

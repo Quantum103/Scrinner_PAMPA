@@ -29,6 +29,9 @@ type Repository interface {
 	GetUserByTelegramID(context.Context, int64) (storage.TelegramUser, error)
 	SubscribeSpotAlerts(context.Context, int64) error
 	UnsubscribeSpotAlerts(context.Context, int64) error
+	AddSpotAlertRule(context.Context, int64, float64, int) (storage.SpotAlertRule, bool, error)
+	ListSpotAlertRules(context.Context, int64) ([]storage.SpotAlertRule, error)
+	DeleteSpotAlertRule(context.Context, int64, int64) error
 	ListUserSpotAlertHistory(context.Context, int64, int, int) ([]storage.SpotAlertHistoryItem, error)
 	ClearUserSpotAlertHistory(context.Context, int64) (int64, error)
 	ClaimPendingSpotAlertDeliveries(context.Context, int, time.Duration) ([]storage.SpotAlertDelivery, error)
@@ -198,7 +201,7 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegramMessage) error
 			return fmt.Errorf("subscribe Telegram user to Spot alerts: %w", err)
 		}
 		return b.sendMenu(ctx, message.Chat.ID,
-			"Привет, "+displayName(user)+". Уведомления о росте Spot-монет включены. Для отключения отправьте /stop.")
+			"Привет, "+displayName(user)+". Уведомления о росте Spot-монет включены. Правила можно настроить командой /rules. Для отключения отправьте /stop.")
 	case "menu":
 		return b.sendMenu(ctx, message.Chat.ID, "Меню Spot-мониторинга")
 	case "stop":
@@ -206,6 +209,12 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegramMessage) error
 			return fmt.Errorf("unsubscribe Telegram user from Spot alerts: %w", err)
 		}
 		return b.api.sendMessage(ctx, message.Chat.ID, "Уведомления о росте Spot-монет отключены.", nil)
+	case "rules":
+		return b.showRules(ctx, message.Chat.ID, user.ID, 0)
+	case "add":
+		return b.addRule(ctx, message.Chat.ID, user.ID, fields[1:])
+	case "remove":
+		return b.removeRule(ctx, message.Chat.ID, user.ID, fields[1:])
 	case "history":
 		return b.showHistory(ctx, message.Chat.ID, user.ID, 0, 0)
 	case "clearhistory":
@@ -331,6 +340,8 @@ func (b *Bot) handleAction(ctx context.Context, chatID, messageID, userID int64,
 		return b.render(ctx, chatID, messageID, "Меню Spot-мониторинга", mainMenuKeyboard())
 	case action == "help":
 		return b.render(ctx, chatID, messageID, helpText, mainMenuKeyboard())
+	case action == "rules":
+		return b.showRules(ctx, chatID, userID, messageID)
 	case action == "history":
 		return b.showHistory(ctx, chatID, userID, 0, messageID)
 	case strings.HasPrefix(action, "history:"):
@@ -370,6 +381,7 @@ func (b *Bot) render(ctx context.Context, chatID, messageID int64, message strin
 
 func mainMenuKeyboard() *inlineKeyboard {
 	return &inlineKeyboard{InlineKeyboard: [][]inlineButton{
+		{{Text: "⚙️ Правила сигналов", CallbackData: "rules"}},
 		{{Text: "📚 История роста", CallbackData: "history"}},
 		{{Text: "🧹 Очистить историю", CallbackData: "clear_history"}},
 		{{Text: "ℹ️ Справка", CallbackData: "help"}},
@@ -381,6 +393,96 @@ func clearHistoryKeyboard() *inlineKeyboard {
 		{{Text: "Да, очистить", CallbackData: "clear_history:confirm"}},
 		{{Text: "Отмена", CallbackData: "clear_history:cancel"}},
 	}}
+}
+
+
+func (b *Bot) showRules(ctx context.Context, chatID, userID, messageID int64) error {
+	rules, err := b.repository.ListSpotAlertRules(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("load Telegram user's Spot rules: %w", err)
+	}
+	var message strings.Builder
+	message.WriteString("Ваши правила сигналов роста:\n\n")
+	for _, rule := range rules {
+		fmt.Fprintf(&message, "#%d — более %s%% за %s\n",
+			rule.ID, formatThreshold(rule.ThresholdPercent), formatWindow(rule.WindowSeconds))
+	}
+	if len(rules) == 0 {
+		message.WriteString("Правила не настроены. Добавьте первое правило командой /add 3 5.\n")
+	}
+	message.WriteString("\nДобавить правило: /add 3 5\nУдалить правило: /remove 2\n")
+	message.WriteString("Формат: /add ПРОЦЕНТ МИНУТЫ. Например, /add 1 1, /add 3 5, /add 10 10.\n")
+	message.WriteString("Можно настроить до 20 правил: от 0.01 до 1000% и от 1 до 60 минут.")
+	return b.render(ctx, chatID, messageID, message.String(), mainMenuKeyboard())
+}
+
+func (b *Bot) addRule(ctx context.Context, chatID, userID int64, args []string) error {
+	if len(args) != 2 {
+		return b.api.sendMessage(ctx, chatID,
+			"Формат добавления: /add ПРОЦЕНТ МИНУТЫ\nПример: /add 3 5 — рост более 3% за 5 минут.", nil)
+	}
+	thresholdText := strings.TrimSuffix(strings.TrimSpace(args[0]), "%")
+	thresholdText = strings.ReplaceAll(thresholdText, ",", ".")
+	threshold, err := strconv.ParseFloat(thresholdText, 64)
+	if err != nil {
+		return b.api.sendMessage(ctx, chatID, "Не удалось прочитать процент. Пример: /add 3.5 5", nil)
+	}
+	minutes, err := strconv.Atoi(strings.TrimSpace(args[1]))
+	if err != nil {
+		return b.api.sendMessage(ctx, chatID, "Таймфрейм указывается целым числом минут. Пример: /add 3 5", nil)
+	}
+	windowSeconds := minutes * 60
+	if err := storage.ValidateSpotAlertRule(threshold, windowSeconds); err != nil {
+		return b.api.sendMessage(ctx, chatID,
+			"Недопустимое правило. Процент: от 0.01 до 1000. Таймфрейм: от 1 до 60 целых минут.", nil)
+	}
+	rule, created, err := b.repository.AddSpotAlertRule(ctx, userID, threshold, windowSeconds)
+	if errors.Is(err, storage.ErrInvalidInput) {
+		return b.api.sendMessage(ctx, chatID,
+			"Достигнут лимит: можно настроить не более 20 разных правил.", nil)
+	}
+	if err != nil {
+		return fmt.Errorf("add Telegram user's Spot rule: %w", err)
+	}
+	status := "добавлено"
+	if !created {
+		status = "уже существует"
+	}
+	return b.api.sendMessage(ctx, chatID,
+		fmt.Sprintf("Правило %s: #%d — более %s%% за %s.", status, rule.ID,
+			formatThreshold(rule.ThresholdPercent), formatWindow(rule.WindowSeconds)), mainMenuKeyboard())
+}
+
+func (b *Bot) removeRule(ctx context.Context, chatID, userID int64, args []string) error {
+	if len(args) != 1 {
+		return b.api.sendMessage(ctx, chatID, "Формат удаления: /remove ID\nПосмотреть ID можно командой /rules.", nil)
+	}
+	ruleID, err := strconv.ParseInt(strings.TrimSpace(args[0]), 10, 64)
+	if err != nil || ruleID <= 0 {
+		return b.api.sendMessage(ctx, chatID, "ID правила должен быть положительным целым числом.", nil)
+	}
+	err = b.repository.DeleteSpotAlertRule(ctx, userID, ruleID)
+	if errors.Is(err, storage.ErrLastSpotAlertRule) {
+		return b.api.sendMessage(ctx, chatID, "Нельзя удалить последнее правило. Сначала добавьте другое через /add.", nil)
+	}
+	if errors.Is(err, storage.ErrNotFound) {
+		return b.api.sendMessage(ctx, chatID, "Правило с таким ID не найдено. Посмотрите список через /rules.", nil)
+	}
+	if err != nil {
+		return fmt.Errorf("delete Telegram user's Spot rule: %w", err)
+	}
+	return b.api.sendMessage(ctx, chatID, fmt.Sprintf("Правило #%d удалено.", ruleID), mainMenuKeyboard())
+}
+
+func formatThreshold(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func formatWindow(windowSeconds int) string {
+	if windowSeconds > 0 && windowSeconds%60 == 0 {
+		return fmt.Sprintf("%d мин.", windowSeconds/60)
+	}
+	return (time.Duration(windowSeconds) * time.Second).String()
 }
 
 func (b *Bot) showHistory(ctx context.Context, chatID, userID int64, offset int, messageID int64) error {
@@ -511,24 +613,20 @@ func deliveryRetryDelay(attempt int) time.Duration {
 }
 
 func formatSpotAlert(delivery storage.SpotAlertDelivery) string {
-	return formatSpotMovement(delivery.Symbol, delivery.ChangePercent, delivery.Price,
-		delivery.ReferencePrice, delivery.DetectedAt, delivery.WindowSeconds)
+	return formatSpotMovement(delivery.Symbol, delivery.ChangePercent, delivery.ThresholdPercent,
+		delivery.Price, delivery.ReferencePrice, delivery.DetectedAt, delivery.WindowSeconds)
 }
 
 func formatSpotHistoryItem(item storage.SpotAlertHistoryItem) string {
-	return formatSpotMovement(item.Symbol, item.ChangePercent, item.Price,
+	return formatSpotMovement(item.Symbol, item.ChangePercent, item.ThresholdPercent, item.Price,
 		item.ReferencePrice, item.DetectedAt, item.WindowSeconds)
 }
 
-func formatSpotMovement(symbol string, change, price, reference float64, detectedAt time.Time, windowSeconds int) string {
-	windowLabel := (time.Duration(windowSeconds) * time.Second).String()
-	if windowSeconds > 0 && windowSeconds%60 == 0 {
-		windowLabel = fmt.Sprintf("%d мин.", windowSeconds/60)
-	}
+func formatSpotMovement(symbol string, change, threshold, price, reference float64, detectedAt time.Time, windowSeconds int) string {
 	return fmt.Sprintf(
-		"🚀 Рост более 5%% за %s\n%s\nИзменение: %+.2f%%\nТекущая цена: %s\nЦена в начале окна: %s\nОбнаружено: %s UTC",
-		windowLabel, symbol, change, formatPrice(price), formatPrice(reference),
-		detectedAt.UTC().Format("2006-01-02 15:04:05"),
+		"🚀 Рост более %s%% за %s\n%s\nИзменение: %+.2f%%\nТекущая цена: %s\nЦена в начале окна: %s\nОбнаружено: %s UTC",
+		formatThreshold(threshold), formatWindow(windowSeconds), symbol, change,
+		formatPrice(price), formatPrice(reference), detectedAt.UTC().Format("2006-01-02 15:04:05"),
 	)
 }
 
@@ -560,5 +658,5 @@ func wait(ctx context.Context, duration time.Duration) bool {
 
 const (
 	authPromptText = "Для доступа к боту отправьте общий пароль отдельным сообщением. Сообщение с паролем будет удалено."
-	helpText       = "Бот отслеживает Spot-пары USDT с оборотом за 24 часа не выше 1 млн USDT и сообщает, когда цена вырастает более чем на 5% за скользящие 15 минут.\n\n/start — включить уведомления\n/stop — отключить уведомления\n/history — история полученных сигналов\n/clearhistory — очистить свою историю"
+	helpText       = "Бот отслеживает Spot-пары USDT с оборотом за 24 часа не выше 1 млн USDT. Правила роста настраиваются отдельно для каждого пользователя.\n\n/start — включить уведомления\n/stop — отключить уведомления\n/rules — мои правила сигналов\n/add 3 5 — добавить рост более 3% за 5 минут\n/remove 2 — удалить правило с ID 2\n/history — история полученных сигналов\n/clearhistory — очистить свою историю"
 )

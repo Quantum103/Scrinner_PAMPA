@@ -122,6 +122,10 @@ func (s *spotAlertSpool) Peek() (storage.SpotMomentumAlert, bool, error) {
 	if err := json.Unmarshal(bytes.TrimSpace(line), &alert); err != nil {
 		return storage.SpotMomentumAlert{}, false, fmt.Errorf("decode Spot alert spool record: %w", err)
 	}
+	// Events written by the previous version did not persist the threshold.
+	if alert.ThresholdPercent == 0 {
+		alert.ThresholdPercent = storage.DefaultSpotAlertThreshold
+	}
 	return alert, true, nil
 }
 
@@ -142,8 +146,13 @@ func (s *spotAlertSpool) Ack(expected storage.SpotMomentumAlert) error {
 	if err := json.Unmarshal(bytes.TrimSpace(data[:newline]), &first); err != nil {
 		return fmt.Errorf("decode oldest Spot alert before acknowledge: %w", err)
 	}
+	if first.ThresholdPercent == 0 {
+		first.ThresholdPercent = storage.DefaultSpotAlertThreshold
+	}
 	if first.Symbol != expected.Symbol || !first.DetectedAt.Equal(expected.DetectedAt) ||
-		!first.ReferenceAt.Equal(expected.ReferenceAt) {
+		!first.ReferenceAt.Equal(expected.ReferenceAt) ||
+		first.WindowSeconds != expected.WindowSeconds ||
+		first.ThresholdPercent != expected.ThresholdPercent {
 		// A previous acknowledge may have completed its atomic rename even if
 		// syncing the directory then reported an error. Never remove a new head.
 		return nil

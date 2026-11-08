@@ -12,7 +12,7 @@ func (r *Repository) ListUserSpotAlertHistory(ctx context.Context, userID int64,
 	rows, err := r.pool.Query(ctx, `
 		SELECT alert.id, alert.symbol, alert.detected_at, alert.reference_at,
 		       alert.current_price::float8, alert.reference_price::float8,
-		       alert.change_percent::float8, alert.window_seconds
+		       alert.change_percent::float8, alert.threshold_percent::float8, alert.window_seconds
 		FROM spot_alert_deliveries delivery
 		JOIN spot_momentum_alerts alert ON alert.id = delivery.alert_id
 		WHERE delivery.user_id = $1 AND delivery.status = 'sent'
@@ -29,7 +29,7 @@ func (r *Repository) ListUserSpotAlertHistory(ctx context.Context, userID int64,
 		var item SpotAlertHistoryItem
 		if err := rows.Scan(
 			&item.ID, &item.Symbol, &item.DetectedAt, &item.ReferenceAt,
-			&item.Price, &item.ReferencePrice, &item.ChangePercent, &item.WindowSeconds,
+			&item.Price, &item.ReferencePrice, &item.ChangePercent, &item.ThresholdPercent, &item.WindowSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan Spot alert history item: %w", err)
 		}

@@ -37,6 +37,17 @@ func (r *Repository) SubscribeSpotAlerts(ctx context.Context, userID int64) erro
 			return fmt.Errorf("verify Telegram user for Spot subscription: %w", err)
 		}
 	}
+	// Give new subscribers the previous default behaviour. Users can add
+	// custom rules immediately and later change or remove this default.
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO spot_alert_rules (user_id, threshold_percent, window_seconds)
+		SELECT $1, $2, $3
+		WHERE EXISTS (SELECT 1 FROM spot_alert_subscriptions WHERE user_id = $1)
+		  AND NOT EXISTS (SELECT 1 FROM spot_alert_rules WHERE user_id = $1)
+		ON CONFLICT (user_id, threshold_percent, window_seconds) DO NOTHING
+	`, userID, DefaultSpotAlertThreshold, DefaultSpotAlertWindow); err != nil {
+		return fmt.Errorf("ensure default Spot alert rule: %w", err)
+	}
 	return nil
 }
 
@@ -71,8 +82,9 @@ func (r *Repository) UnsubscribeSpotAlerts(ctx context.Context, userID int64) er
 	return nil
 }
 
-// SaveSpotMomentumAlert stores a detected market event and enqueues it for every
-// currently subscribed, active Telegram user in one transaction.
+// SaveSpotMomentumAlert stores a detected event and enqueues it only for active
+// subscribers whose personal rules match this event. Event creation and delivery
+// enqueueing are atomic.
 func (r *Repository) SaveSpotMomentumAlert(ctx context.Context, alert SpotMomentumAlert) (int64, bool, int64, error) {
 	if err := validateSpotMomentumAlert(alert); err != nil {
 		return 0, false, 0, err
@@ -87,18 +99,21 @@ func (r *Repository) SaveSpotMomentumAlert(ctx context.Context, alert SpotMoment
 	err = tx.QueryRow(ctx, `
 		INSERT INTO spot_momentum_alerts (
 			symbol, detected_at, reference_at, current_price, reference_price,
-			change_percent, window_seconds
+			change_percent, threshold_percent, window_seconds
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (symbol, detected_at, reference_at) DO NOTHING
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (symbol, detected_at, reference_at, window_seconds, threshold_percent) DO NOTHING
 		RETURNING id
 	`, strings.ToUpper(strings.TrimSpace(alert.Symbol)), alert.DetectedAt, alert.ReferenceAt,
-		alert.Price, alert.ReferencePrice, alert.ChangePercent, alert.WindowSeconds).Scan(&alertID)
+		alert.Price, alert.ReferencePrice, alert.ChangePercent, alert.ThresholdPercent,
+		alert.WindowSeconds).Scan(&alertID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `
 			SELECT id FROM spot_momentum_alerts
 			WHERE symbol = $1 AND detected_at = $2 AND reference_at = $3
-		`, strings.ToUpper(strings.TrimSpace(alert.Symbol)), alert.DetectedAt, alert.ReferenceAt).Scan(&alertID)
+			  AND window_seconds = $4 AND threshold_percent = $5::numeric
+		`, strings.ToUpper(strings.TrimSpace(alert.Symbol)), alert.DetectedAt, alert.ReferenceAt,
+			alert.WindowSeconds, alert.ThresholdPercent).Scan(&alertID)
 		if err != nil {
 			return 0, false, 0, fmt.Errorf("load existing Spot alert: %w", err)
 		}
@@ -113,12 +128,15 @@ func (r *Repository) SaveSpotMomentumAlert(ctx context.Context, alert SpotMoment
 
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO spot_alert_deliveries (user_id, alert_id)
-		SELECT subscription.user_id, $1
-		FROM spot_alert_subscriptions subscription
-		JOIN telegram_users user_account ON user_account.id = subscription.user_id
+		SELECT rule.user_id, $1
+		FROM spot_alert_rules rule
+		JOIN spot_alert_subscriptions subscription ON subscription.user_id = rule.user_id
+		JOIN telegram_users user_account ON user_account.id = rule.user_id
 		WHERE user_account.is_active = TRUE
+		  AND rule.window_seconds = $2
+		  AND rule.threshold_percent = $3::numeric
 		ON CONFLICT (user_id, alert_id) DO NOTHING
-	`, alertID)
+	`, alertID, alert.WindowSeconds, alert.ThresholdPercent)
 	if err != nil {
 		return 0, false, 0, fmt.Errorf("enqueue Spot alert deliveries: %w", err)
 	}
@@ -144,14 +162,17 @@ func validateSpotMomentumAlert(alert SpotMomentumAlert) error {
 	}
 	for name, value := range map[string]float64{
 		"current price": alert.Price, "reference price": alert.ReferencePrice,
-		"change percent": alert.ChangePercent,
+		"change percent": alert.ChangePercent, "threshold percent": alert.ThresholdPercent,
 	} {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return fmt.Errorf("%w: Spot alert %s must be finite", ErrInvalidInput, name)
 		}
 	}
-	if alert.Price <= 0 || alert.ReferencePrice <= 0 || alert.ChangePercent <= 0 {
-		return fmt.Errorf("%w: Spot alert prices and change must be positive", ErrInvalidInput)
+	if alert.Price <= 0 || alert.ReferencePrice <= 0 || alert.ChangePercent <= alert.ThresholdPercent {
+		return fmt.Errorf("%w: Spot alert price change must be strictly greater than its threshold", ErrInvalidInput)
+	}
+	if err := ValidateSpotAlertRule(alert.ThresholdPercent, alert.WindowSeconds); err != nil {
+		return err
 	}
 	if alert.WindowSeconds < 1 || alert.WindowSeconds > 86400 {
 		return fmt.Errorf("%w: Spot alert window must be between 1 second and 24 hours", ErrInvalidInput)
@@ -196,7 +217,8 @@ func (r *Repository) ClaimPendingSpotAlertDeliveries(ctx context.Context, limit 
 		RETURNING delivery.user_id, user_account.telegram_id, delivery.alert_id,
 		          delivery.attempt_count, alert.symbol, alert.detected_at, alert.reference_at,
 		          alert.current_price::float8, alert.reference_price::float8,
-		          alert.change_percent::float8, alert.window_seconds
+		          alert.change_percent::float8, alert.threshold_percent::float8,
+		          alert.window_seconds
 	`, limit, lease.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("claim pending Spot alert deliveries: %w", err)
@@ -209,7 +231,8 @@ func (r *Repository) ClaimPendingSpotAlertDeliveries(ctx context.Context, limit 
 		if err := rows.Scan(
 			&item.UserID, &item.TelegramID, &item.AlertID, &item.AttemptCount,
 			&item.Symbol, &item.DetectedAt, &item.ReferenceAt, &item.Price,
-			&item.ReferencePrice, &item.ChangePercent, &item.WindowSeconds,
+			&item.ReferencePrice, &item.ChangePercent, &item.ThresholdPercent,
+			&item.WindowSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan claimed Spot alert delivery: %w", err)
 		}

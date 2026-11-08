@@ -210,3 +210,115 @@ func TestTrackerCanRearmAfterDownstreamPersistenceFailure(t *testing.T) {
 		t.Fatalf("crossing should be retryable after persistence failure: signal=%+v err=%v", retried, err)
 	}
 }
+
+func TestTrackerSupportsMultipleIndependentRules(t *testing.T) {
+	tracker, err := NewRuleTracker(DefaultMaxReferenceAge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := []Rule{
+		{Window: time.Minute, ThresholdPercent: 1},
+		{Window: 5 * time.Minute, ThresholdPercent: 3},
+		{Window: 10 * time.Minute, ThresholdPercent: 10},
+	}
+	if err := tracker.SetRules(rules); err != nil {
+		t.Fatal(err)
+	}
+	if got := tracker.RuleCount(); got != 3 {
+		t.Fatalf("active rule count = %d, want 3", got)
+	}
+
+	start := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	if err := tracker.Seed("ABCUSDT", []PricePoint{
+		{At: start.Add(-10 * time.Minute), Price: 100},
+		{At: start.Add(-5 * time.Minute), Price: 100},
+		{At: start.Add(-time.Minute), Price: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	signals, err := tracker.AddAll("ABCUSDT", PricePoint{At: start, Price: 112})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signals) != 3 {
+		t.Fatalf("signals = %+v, want all three rules to trigger", signals)
+	}
+	want := map[Rule]bool{
+		{Window: time.Minute, ThresholdPercent: 1}:       false,
+		{Window: 5 * time.Minute, ThresholdPercent: 3}:    false,
+		{Window: 10 * time.Minute, ThresholdPercent: 10}:  false,
+	}
+	for _, signal := range signals {
+		rule := Rule{Window: signal.Window, ThresholdPercent: signal.ThresholdPercent}
+		if _, ok := want[rule]; !ok {
+			t.Errorf("unexpected triggered rule: %+v", signal)
+		}
+		delete(want, rule)
+	}
+	if len(want) != 0 {
+		t.Fatalf("some configured rules did not trigger: %+v", want)
+	}
+
+	// All three rules re-arm on a pullback, but they still have independent
+	// state and can trigger again on the next qualifying movement.
+	if _, err := tracker.AddAll("ABCUSDT", PricePoint{
+		At: start.Add(time.Minute), Price: 103,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	signals, err = tracker.AddAll("ABCUSDT", PricePoint{
+		At: start.Add(time.Minute + time.Second), Price: 115,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signals) != 3 {
+		t.Fatalf("signals after re-arm = %+v, want three independently re-armed rules", signals)
+	}
+}
+
+func TestTrackerUpdatesRulesWithoutLosingSeededHistory(t *testing.T) {
+	tracker, err := NewRuleTracker(DefaultMaxReferenceAge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	if err := tracker.Seed("ABCUSDT", []PricePoint{
+		{At: start.Add(-60 * time.Minute), Price: 100},
+		{At: start.Add(-time.Minute), Price: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.SetRules([]Rule{{Window: time.Minute, ThresholdPercent: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.SetRules([]Rule{{Window: 60 * time.Minute, ThresholdPercent: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	signals, err := tracker.AddAll("ABCUSDT", PricePoint{At: start, Price: 106})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signals) != 1 || signals[0].Window != 60*time.Minute || signals[0].ReferencePrice != 100 {
+		t.Fatalf("new longer rule did not use retained history: %+v", signals)
+	}
+}
+
+func TestTrackerRejectsUnsupportedRule(t *testing.T) {
+	tracker, err := NewRuleTracker(DefaultMaxReferenceAge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range []Rule{
+		{Window: 59 * time.Second, ThresholdPercent: 1},
+		{Window: 61 * time.Minute, ThresholdPercent: 1},
+		{Window: time.Minute, ThresholdPercent: 0},
+		{Window: time.Minute, ThresholdPercent: 1001},
+		{Window: time.Minute, ThresholdPercent: math.NaN()},
+	} {
+		if err := tracker.SetRules([]Rule{rule}); err == nil {
+			t.Errorf("unsupported rule should fail: %+v", rule)
+		}
+	}
+}

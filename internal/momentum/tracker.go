@@ -14,8 +14,14 @@ const (
 	DefaultWindow           = 15 * time.Minute
 	DefaultThresholdPercent = 5.0
 	DefaultMaxReferenceAge  = 90 * time.Second
-	defaultMaximumPoints    = 1024
+	MaxSupportedWindow      = 60 * time.Minute
+	defaultMaximumPoints    = 4096
 )
+
+type Rule struct {
+	Window          time.Duration
+	ThresholdPercent float64
+}
 
 type PricePoint struct {
 	At    time.Time
@@ -23,48 +29,121 @@ type PricePoint struct {
 }
 
 type Signal struct {
-	Symbol         string
-	At             time.Time
-	Price          float64
-	ReferenceAt    time.Time
-	ReferencePrice float64
-	ChangePercent  float64
+	Symbol          string
+	At              time.Time
+	Price           float64
+	ReferenceAt     time.Time
+	ReferencePrice  float64
+	ChangePercent   float64
+	Window          time.Duration
+	ThresholdPercent float64
 }
 
 type symbolSeries struct {
 	points     []PricePoint
-	armed      bool
+	armed      map[Rule]bool
 	hasHistory bool
 }
 
 type Tracker struct {
 	mu              sync.RWMutex
-	window          time.Duration
-	threshold       float64
+	rules           []Rule
 	maxReferenceAge time.Duration
 	maximumPoints   int
 	symbols         map[string]*symbolSeries
 }
 
+// NewTracker preserves the single-rule constructor used by older callers.
+// New code that manages user-configured rules should use NewRuleTracker.
 func NewTracker(window time.Duration, thresholdPercent float64, maxReferenceAge time.Duration) (*Tracker, error) {
-	if window <= 0 {
-		return nil, errors.New("momentum window must be positive")
+	tracker, err := NewRuleTracker(maxReferenceAge)
+	if err != nil {
+		return nil, err
 	}
-	if math.IsNaN(thresholdPercent) || math.IsInf(thresholdPercent, 0) || thresholdPercent <= 0 {
-		return nil, errors.New("momentum threshold must be positive and finite")
+	if err := tracker.SetRules([]Rule{{Window: window, ThresholdPercent: thresholdPercent}}); err != nil {
+		return nil, err
 	}
+	return tracker, nil
+}
+
+// NewRuleTracker creates a tracker whose active rule set can be replaced at
+// runtime. It retains enough price history for any supported rule, so adding a
+// longer rule does not require restarting or reseeding every symbol.
+func NewRuleTracker(maxReferenceAge time.Duration) (*Tracker, error) {
 	if maxReferenceAge <= 0 {
 		return nil, errors.New("momentum maximum reference age must be positive")
 	}
 	return &Tracker{
-		window: window, threshold: thresholdPercent, maxReferenceAge: maxReferenceAge,
-		maximumPoints: defaultMaximumPoints, symbols: make(map[string]*symbolSeries),
+		maxReferenceAge: maxReferenceAge,
+		maximumPoints:   defaultMaximumPoints,
+		symbols:         make(map[string]*symbolSeries),
 	}, nil
 }
 
+// SetRules replaces the active rule set without discarding ticker history.
+// Each rule has an independent crossing/re-arm state. Duplicate rules are
+// collapsed, and the remaining rules are processed in deterministic order.
+func (t *Tracker) SetRules(rules []Rule) error {
+	unique := make(map[Rule]struct{}, len(rules))
+	normalized := make([]Rule, 0, len(rules))
+	for _, rule := range rules {
+		if err := validateRule(rule); err != nil {
+			return err
+		}
+		if _, exists := unique[rule]; exists {
+			continue
+		}
+		unique[rule] = struct{}{}
+		normalized = append(normalized, rule)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		if normalized[i].Window != normalized[j].Window {
+			return normalized[i].Window < normalized[j].Window
+		}
+		return normalized[i].ThresholdPercent < normalized[j].ThresholdPercent
+	})
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rules = normalized
+	for _, series := range t.symbols {
+		if series.armed == nil {
+			series.armed = make(map[Rule]bool)
+		}
+		for rule := range series.armed {
+			if _, active := unique[rule]; !active {
+				delete(series.armed, rule)
+			}
+		}
+		for _, rule := range normalized {
+			if _, exists := series.armed[rule]; !exists {
+				series.armed[rule] = true
+			}
+		}
+	}
+	return nil
+}
+
+func validateRule(rule Rule) error {
+	if rule.Window < time.Minute || rule.Window > MaxSupportedWindow || rule.Window%time.Second != 0 {
+		return fmt.Errorf("momentum window must be between 1 minute and %s", MaxSupportedWindow)
+	}
+	if math.IsNaN(rule.ThresholdPercent) || math.IsInf(rule.ThresholdPercent, 0) ||
+		rule.ThresholdPercent < 0.01 || rule.ThresholdPercent > 1000 {
+		return errors.New("momentum threshold must be between 0.01 and 1000 percent")
+	}
+	return nil
+}
+
+func (t *Tracker) RuleCount() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return len(t.rules)
+}
+
 // Seed merges historical reference points into the live series without
-// generating historical alerts. It is safe to call while WebSocket updates
-// are arriving; points are sorted and duplicate seconds are coalesced.
+// generating alerts. Live prices that arrived while REST history was loading
+// are merged rather than overwritten.
 func (t *Tracker) Seed(symbol string, points []PricePoint) error {
 	symbol, err := normalizeSymbol(symbol)
 	if err != nil {
@@ -92,7 +171,21 @@ func (t *Tracker) Seed(symbol string, points []PricePoint) error {
 	return nil
 }
 
+// Add is the backwards-compatible single-signal form. Multi-rule consumers
+// should call AddAll so every matching configured rule can produce an alert.
 func (t *Tracker) Add(symbol string, point PricePoint) (*Signal, error) {
+	signals, err := t.AddAll(symbol, point)
+	if err != nil || len(signals) == 0 {
+		return nil, err
+	}
+	return &signals[0], nil
+}
+
+// AddAll evaluates every active rule against the same incoming ticker update.
+// One rule can signal only once during a continuous above-threshold excursion;
+// it re-arms independently when its own rolling return falls to or below its
+// threshold.
+func (t *Tracker) AddAll(symbol string, point PricePoint) ([]Signal, error) {
 	symbol, err := normalizeSymbol(symbol)
 	if err != nil {
 		return nil, err
@@ -112,44 +205,63 @@ func (t *Tracker) Add(symbol string, point PricePoint) (*Signal, error) {
 		}
 	}
 
-	cutoff := point.At.Add(-t.window)
-	reference, ok := latestPointAtOrBefore(series.points, cutoff)
-	if ok {
+	signals := make([]Signal, 0)
+	for _, rule := range t.rules {
+		cutoff := point.At.Add(-rule.Window)
+		reference, ok := latestPointAtOrBefore(series.points, cutoff)
+		if !ok {
+			continue
+		}
 		age := cutoff.Sub(reference.At)
 		if age < 0 || age > t.maxReferenceAge {
-			ok = false
+			continue
 		}
-	}
 
-	var signal *Signal
-	if ok {
-		change := (point.Price/reference.Price - 1) * 100
-		thresholdPrice := reference.Price * (1 + t.threshold/100)
+		thresholdPrice := reference.Price * (1 + rule.ThresholdPercent/100)
 		if point.Price <= thresholdPrice {
-			series.armed = true
-		} else if series.armed {
-			signal = &Signal{
-				Symbol: symbol, At: point.At.UTC(), Price: point.Price,
-				ReferenceAt: reference.At.UTC(), ReferencePrice: reference.Price,
-				ChangePercent: change,
-			}
-			series.armed = false
+			series.armed[rule] = true
+			continue
 		}
+		if !series.armed[rule] {
+			continue
+		}
+		change := (point.Price/reference.Price - 1) * 100
+		signals = append(signals, Signal{
+			Symbol: symbol, At: point.At.UTC(), Price: point.Price,
+			ReferenceAt: reference.At.UTC(), ReferencePrice: reference.Price,
+			ChangePercent: change, Window: rule.Window,
+			ThresholdPercent: rule.ThresholdPercent,
+		})
+		series.armed[rule] = false
 	}
 
 	series.points = insertOrReplaceSecond(series.points, point)
 	t.pruneLocked(series, point.At)
-	return signal, nil
+	return signals, nil
 }
 
-// Rearm allows a downstream persistence failure to retry the current
-// above-threshold excursion on the next live price update.
+// Rearm makes every active rule for a symbol retryable after persistence fails.
 func (t *Tracker) Rearm(symbol string) {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if series := t.symbols[symbol]; series != nil {
-		series.armed = true
+		for rule := range series.armed {
+			series.armed[rule] = true
+		}
+	}
+}
+
+// RearmRule makes only the failed rule retryable. Other signals generated by
+// the same WebSocket update remain disarmed.
+func (t *Tracker) RearmRule(symbol string, rule Rule) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if series := t.symbols[symbol]; series != nil {
+		if _, exists := series.armed[rule]; exists {
+			series.armed[rule] = true
+		}
 	}
 }
 
@@ -161,8 +273,8 @@ func (t *Tracker) HasSymbol(symbol string) bool {
 	return series != nil && len(series.points) > 0
 }
 
-// HasHistory indicates that REST history was successfully merged for a
-// symbol. Live ticks alone do not suppress a retry after a failed seed request.
+// HasHistory indicates that a symbol's REST candle history was successfully
+// merged. Live ticks alone do not suppress a retry after a failed seed request.
 func (t *Tracker) HasHistory(symbol string) bool {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	t.mu.RLock()
@@ -191,7 +303,10 @@ func (t *Tracker) KeepSymbols(symbols []string) {
 func (t *Tracker) seriesLocked(symbol string) *symbolSeries {
 	series := t.symbols[symbol]
 	if series == nil {
-		series = &symbolSeries{armed: true}
+		series = &symbolSeries{armed: make(map[Rule]bool)}
+		for _, rule := range t.rules {
+			series.armed[rule] = true
+		}
 		t.symbols[symbol] = series
 	}
 	return series
@@ -201,7 +316,7 @@ func (t *Tracker) pruneLocked(series *symbolSeries, now time.Time) {
 	if len(series.points) <= 1 {
 		return
 	}
-	cutoff := now.Add(-t.window - t.maxReferenceAge)
+	cutoff := now.Add(-MaxSupportedWindow - t.maxReferenceAge)
 	firstUseful := sort.Search(len(series.points), func(i int) bool {
 		return !series.points[i].At.Before(cutoff)
 	})
