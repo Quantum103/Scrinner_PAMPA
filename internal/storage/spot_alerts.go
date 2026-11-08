@@ -41,7 +41,7 @@ func (r *Repository) SubscribeSpotAlerts(ctx context.Context, userID int64) erro
 }
 
 // UnsubscribeSpotAlerts disables Spot alerts and cancels deliveries that have not
-// completed. It does not change the user's separate RSI signal settings.
+// completed.
 func (r *Repository) UnsubscribeSpotAlerts(ctx context.Context, userID int64) error {
 	if userID <= 0 {
 		return fmt.Errorf("%w: user ID must be positive", ErrInvalidInput)

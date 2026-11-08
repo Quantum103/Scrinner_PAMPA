@@ -688,3 +688,33 @@ func TestActivateTelegramUser(t *testing.T) {
 		t.Fatalf("activate unknown user error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestRSISchemaIsRemovedAndSpotSchemaRemains(t *testing.T) {
+	repository, pool := testRepository(t)
+	_ = repository
+	ctx := context.Background()
+	for _, table := range []string{
+		"signals", "signal_deliveries", "scanner_states", "scanner_profile_states",
+		"user_settings", "user_timeframes", "instruments",
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx, "SELECT to_regclass('public.' || $1) IS NOT NULL", table).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if exists {
+			t.Errorf("RSI table %q still exists after migration 000009", table)
+		}
+	}
+	for _, table := range []string{
+		"spot_instruments", "spot_watchlist", "spot_momentum_alerts",
+		"spot_alert_subscriptions", "spot_alert_deliveries", "telegram_users",
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx, "SELECT to_regclass('public.' || $1) IS NOT NULL", table).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Errorf("Spot table %q is missing after migration 000009", table)
+		}
+	}
+}

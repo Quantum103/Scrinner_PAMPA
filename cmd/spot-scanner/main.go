@@ -15,7 +15,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("RSI Scanner stopped with an error", "error", err)
+		slog.Error("Spot scanner stopped with an error", "error", err)
 		os.Exit(1)
 	}
 }
@@ -25,7 +25,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
-
 	logger := newLogger(cfg.App.LogLevel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -39,7 +38,7 @@ func run() error {
 	if err := application.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
-	logger.Info("RSI Scanner stopped")
+	logger.Info("Spot scanner stopped")
 	return nil
 }
 

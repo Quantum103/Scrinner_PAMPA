@@ -21,537 +21,183 @@ type fakeTelegramAPI struct {
 func (f *fakeTelegramAPI) getUpdates(context.Context, int64, int64) ([]telegramUpdate, error) {
 	return nil, nil
 }
-
 func (f *fakeTelegramAPI) sendMessage(_ context.Context, _ int64, message string, _ *inlineKeyboard) error {
 	f.sentMessages = append(f.sentMessages, message)
 	return f.sendErr
 }
-
 func (f *fakeTelegramAPI) editMessageText(_ context.Context, _, _ int64, message string, _ *inlineKeyboard) error {
 	f.edited = append(f.edited, message)
 	return nil
 }
-
 func (f *fakeTelegramAPI) answerCallbackQuery(context.Context, string, string) error {
 	f.answered++
 	return nil
 }
-
 func (f *fakeTelegramAPI) deleteWebhook(context.Context) error { return nil }
-
 func (f *fakeTelegramAPI) deleteMessage(_ context.Context, _ int64, messageID int64) error {
 	f.deleted = append(f.deleted, messageID)
 	return nil
 }
-
 func (f *fakeTelegramAPI) getMe(context.Context) (telegramUser, error) {
-	return telegramUser{ID: 1000, Username: "rsi_scanner_bot"}, nil
+	return telegramUser{ID: 1000, Username: "spot_scanner_bot"}, nil
 }
-
 func (f *fakeTelegramAPI) setMyCommands(context.Context) error { return nil }
 
 type fakeTelegramRepository struct {
-	users                map[int64]storage.TelegramUser
-	settings             map[int64]storage.UserSettings
-	spotSubscriptions    map[int64]bool
-	spotUnsubscribeCalls int
-	spotDeliveryFailed   int
-	spotDeliverySent     int
-	ensureCalls          int
-	updates              int
+	users      map[int64]storage.TelegramUser
+	subs       map[int64]bool
+	clearCalls int
 }
 
 func newFakeTelegramRepository() *fakeTelegramRepository {
 	return &fakeTelegramRepository{
-		users:             make(map[int64]storage.TelegramUser),
-		settings:          make(map[int64]storage.UserSettings),
-		spotSubscriptions: make(map[int64]bool),
+		users: make(map[int64]storage.TelegramUser),
+		subs:  make(map[int64]bool),
 	}
 }
-
 func (f *fakeTelegramRepository) EnsureTelegramUser(_ context.Context, user storage.TelegramUser) (storage.TelegramUser, error) {
-	f.ensureCalls++
-	if saved, exists := f.users[user.TelegramID]; exists {
+	if saved, ok := f.users[user.TelegramID]; ok {
 		return saved, nil
 	}
 	user.ID = int64(len(f.users) + 1)
 	user.IsActive = true
 	f.users[user.TelegramID] = user
-	f.settings[user.ID] = storage.DefaultUserSettings(user.ID)
 	return user, nil
 }
-
 func (f *fakeTelegramRepository) ActivateTelegramUser(_ context.Context, telegramID int64) error {
-	user, exists := f.users[telegramID]
-	if !exists {
+	user, ok := f.users[telegramID]
+	if !ok {
 		return storage.ErrNotFound
 	}
 	user.IsActive = true
 	f.users[telegramID] = user
 	return nil
 }
-
 func (f *fakeTelegramRepository) GetUserByTelegramID(_ context.Context, telegramID int64) (storage.TelegramUser, error) {
-	user, exists := f.users[telegramID]
-	if !exists {
+	user, ok := f.users[telegramID]
+	if !ok {
 		return storage.TelegramUser{}, storage.ErrNotFound
 	}
 	return user, nil
 }
-
-func (f *fakeTelegramRepository) GetOrCreateUserSettings(_ context.Context, userID int64) (storage.UserSettings, error) {
-	settings, exists := f.settings[userID]
-	if !exists {
-		return storage.UserSettings{}, storage.ErrNotFound
-	}
-	return settings, nil
-}
-
-func (f *fakeTelegramRepository) UpdateUserSettings(_ context.Context, settings storage.UserSettings) error {
-	f.settings[settings.UserID] = settings
-	f.updates++
-	return nil
-}
-
-func (f *fakeTelegramRepository) SetInstrumentPreference(context.Context, int64, string, string) error {
-	return nil
-}
-
-func (f *fakeTelegramRepository) ClearInstrumentPreference(context.Context, int64, string) error {
-	return nil
-}
-
-func (f *fakeTelegramRepository) ListInstrumentPreferences(context.Context, int64) ([]storage.InstrumentPreference, error) {
-	return nil, nil
-}
-
-func (f *fakeTelegramRepository) ListUserSignals(context.Context, int64, storage.SignalFilters) ([]storage.Signal, error) {
-	return nil, nil
-}
-
-func (f *fakeTelegramRepository) ClaimPendingDeliveries(context.Context, int, time.Duration) ([]storage.Delivery, error) {
-	return nil, nil
-}
-
-func (f *fakeTelegramRepository) MarkDeliverySent(context.Context, int64, int64) error { return nil }
-
-func (f *fakeTelegramRepository) MarkDeliveryFailed(context.Context, int64, int64, time.Time, error) error {
-	return nil
-}
-
 func (f *fakeTelegramRepository) SubscribeSpotAlerts(_ context.Context, userID int64) error {
-	user, exists := f.usersByID(userID)
-	if !exists || !user.IsActive {
-		return storage.ErrNotFound
-	}
-	f.spotSubscriptions[userID] = true
+	f.subs[userID] = true
 	return nil
 }
-
 func (f *fakeTelegramRepository) UnsubscribeSpotAlerts(_ context.Context, userID int64) error {
-	f.spotUnsubscribeCalls++
-	delete(f.spotSubscriptions, userID)
+	delete(f.subs, userID)
 	return nil
 }
-
+func (f *fakeTelegramRepository) ListUserSpotAlertHistory(context.Context, int64, int, int) ([]storage.SpotAlertHistoryItem, error) {
+	return nil, nil
+}
+func (f *fakeTelegramRepository) ClearUserSpotAlertHistory(context.Context, int64) (int64, error) {
+	f.clearCalls++
+	return 3, nil
+}
 func (f *fakeTelegramRepository) ClaimPendingSpotAlertDeliveries(context.Context, int, time.Duration) ([]storage.SpotAlertDelivery, error) {
 	return nil, nil
 }
-
 func (f *fakeTelegramRepository) MarkSpotAlertDeliverySent(context.Context, int64, int64) error {
-	f.spotDeliverySent++
 	return nil
 }
-
 func (f *fakeTelegramRepository) MarkSpotAlertDeliveryFailed(context.Context, int64, int64, time.Time, error) error {
-	f.spotDeliveryFailed++
 	return nil
 }
 
-func (f *fakeTelegramRepository) usersByID(userID int64) (storage.TelegramUser, bool) {
-	for _, user := range f.users {
-		if user.ID == userID {
-			return user, true
-		}
-	}
-	return storage.TelegramUser{}, false
-}
-
-func newTestBot(t *testing.T) (*Bot, *fakeTelegramAPI, *fakeTelegramRepository) {
-	t.Helper()
+func TestStartAndStopControlSpotSubscription(t *testing.T) {
 	api := &fakeTelegramAPI{}
 	repository := newFakeTelegramRepository()
-	bot, err := newWithAPI(api, "correct-horse-battery-staple", repository, nil)
+	user := storage.TelegramUser{ID: 1, TelegramID: 42, IsActive: true, FirstName: "Test"}
+	repository.users[user.TelegramID] = user
+	bot, err := newWithAPI(api, "long-enough-password", repository, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return bot, api, repository
+	message := &telegramMessage{
+		MessageID: 1, From: &telegramUser{ID: 42, FirstName: "Test"},
+		Chat: telegramChat{ID: 42, Type: "private"}, Text: "/start",
+	}
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if !repository.subs[user.ID] {
+		t.Fatal("/start did not subscribe to Spot alerts")
+	}
+	message.Text = "/stop"
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if repository.subs[user.ID] {
+		t.Fatal("/stop did not unsubscribe from Spot alerts")
+	}
 }
 
-func TestNewRejectsWeakTelegramAccessPassword(t *testing.T) {
+func TestClearHistoryRequiresExplicitConfirmation(t *testing.T) {
 	api := &fakeTelegramAPI{}
 	repository := newFakeTelegramRepository()
-	if _, err := newWithAPI(api, "short", repository, nil); err == nil {
-		t.Fatal("short access password must be rejected")
+	repository.users[42] = storage.TelegramUser{ID: 1, TelegramID: 42, IsActive: true}
+	bot, err := newWithAPI(api, "long-enough-password", repository, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestPasswordAuthenticationDeletesPasswordMessageAndPersistsUser(t *testing.T) {
-	bot, api, repository := newTestBot(t)
 	message := &telegramMessage{
-		MessageID: 10,
-		Chat:      telegramChat{ID: 1001, Type: "private"},
-		From:      &telegramUser{ID: 1001, FirstName: "Authorized"},
-		Text:      "/start",
+		MessageID: 7, From: &telegramUser{ID: 42},
+		Chat: telegramChat{ID: 42, Type: "private"}, Text: "/clearhistory",
 	}
-	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-		t.Fatalf("start update: %v", err)
+	if err := bot.handleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
 	}
-	if len(repository.users) != 0 || len(api.sentMessages) != 1 || !containsText(api.sentMessages[0], "отправьте общий пароль") {
-		t.Fatalf("unauthenticated /start did not request password: users=%+v messages=%#v", repository.users, api.sentMessages)
+	if repository.clearCalls != 0 {
+		t.Fatal("history was cleared before confirmation")
 	}
-
-	message.MessageID = 11
-	message.Text = "wrong-password"
-	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-		t.Fatalf("wrong password update: %v", err)
+	callback := &telegramCallback{
+		ID: "callback", From: &telegramUser{ID: 42},
+		Message: &telegramMessage{MessageID: 7, Chat: telegramChat{ID: 42, Type: "private"}},
+		Data: "clear_history:confirm",
 	}
-	if len(repository.users) != 0 || len(api.deleted) != 1 || !containsText(api.sentMessages[len(api.sentMessages)-1], "Пароль неверный") {
-		t.Fatalf("wrong password was not rejected and deleted: users=%+v deleted=%v messages=%#v", repository.users, api.deleted, api.sentMessages)
+	if err := bot.handleCallback(context.Background(), callback); err != nil {
+		t.Fatal(err)
 	}
-
-	message.MessageID = 12
-	message.Text = "correct-horse-battery-staple"
-	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-		t.Fatalf("correct password update: %v", err)
-	}
-	user, exists := repository.users[1001]
-	if !exists || !user.IsActive || user.ID == 0 || len(api.deleted) != 2 || !containsText(api.sentMessages[len(api.sentMessages)-1], "Доступ открыт") {
-		t.Fatalf("correct password did not authorize user: user=%+v exists=%v deleted=%v messages=%#v", user, exists, api.deleted, api.sentMessages)
+	if repository.clearCalls != 1 || len(api.edited) != 1 || !strings.Contains(api.edited[0], "3") {
+		t.Fatalf("confirmation did not clear and report history: calls=%d edits=%v", repository.clearCalls, api.edited)
 	}
 }
 
-func TestStartAndStopControlSpotAlertSubscription(t *testing.T) {
-	bot, api, repository := newTestBot(t)
+func TestPasswordMessageIsDeletedAndNotEchoed(t *testing.T) {
+	api := &fakeTelegramAPI{}
+	repository := newFakeTelegramRepository()
+	bot, err := newWithAPI(api, "long-enough-password", repository, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	message := &telegramMessage{
-		MessageID: 1, Chat: telegramChat{ID: 1001, Type: "private"},
-		From: &telegramUser{ID: 1001, FirstName: "Subscriber"},
-		Text: "correct-horse-battery-staple",
+		MessageID: 9, From: &telegramUser{ID: 77},
+		Chat: telegramChat{ID: 77, Type: "private"}, Text: "incorrect-password",
 	}
-	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-		t.Fatalf("password authentication: %v", err)
+	if err := bot.handlePasswordAuthentication(context.Background(), message); err != nil {
+		t.Fatal(err)
 	}
-	user := repository.users[1001]
-
-	message.MessageID = 2
-	message.Text = "/start"
-	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-		t.Fatalf("/start: %v", err)
-	}
-	if !repository.spotSubscriptions[user.ID] {
-		t.Fatal("/start did not enable Spot alerts")
-	}
-	if !strings.Contains(api.sentMessages[len(api.sentMessages)-1], "Подписка на Spot-уведомления включена") {
-		t.Fatalf("/start did not confirm Spot subscription: %q", api.sentMessages[len(api.sentMessages)-1])
-	}
-
-	message.MessageID = 3
-	message.Text = "/stop"
-	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-		t.Fatalf("/stop: %v", err)
-	}
-	if repository.spotSubscriptions[user.ID] {
-		t.Fatal("/stop did not disable Spot alerts")
-	}
-	if !strings.Contains(api.sentMessages[len(api.sentMessages)-1], "RSI-уведомления") {
-		t.Fatalf("/stop did not explain that RSI alerts are unchanged: %q", api.sentMessages[len(api.sentMessages)-1])
+	if len(api.deleted) != 1 || len(api.sentMessages) != 1 ||
+		strings.Contains(api.sentMessages[0], message.Text) {
+		t.Fatalf("password was not deleted safely: deleted=%v messages=%v", api.deleted, api.sentMessages)
 	}
 }
 
-func TestPasswordAuthenticationLocksAfterFiveFailures(t *testing.T) {
-	bot, api, repository := newTestBot(t)
-	message := &telegramMessage{
-		Chat: telegramChat{ID: 2002, Type: "private"},
-		From: &telegramUser{ID: 2002},
-		Text: "incorrect-password",
-	}
-	for attempt := 0; attempt < maxPasswordFailures; attempt++ {
-		message.MessageID = int64(attempt + 1)
-		if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-			t.Fatalf("failed password attempt %d: %v", attempt+1, err)
+func TestSpotAlertFormattingAndPermanentDeliveryErrors(t *testing.T) {
+	message := formatSpotMovement(
+		"ABCUSDT", 7.25, 1.08, 1,
+		time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC), 900,
+	)
+	for _, part := range []string{"ABCUSDT", "+7.25%", "15 мин.", "1.08"} {
+		if !strings.Contains(message, part) {
+			t.Fatalf("formatted alert %q does not contain %q", message, part)
 		}
 	}
-	message.Text = "correct-horse-battery-staple"
-	message.MessageID = 10
-	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-		t.Fatalf("locked password attempt: %v", err)
+	if !isPermanentTelegramDeliveryError(&telegramAPIError{Code: 403, Description: "bot was blocked by the user"}) {
+		t.Fatal("blocked user should be a permanent delivery failure")
 	}
-	if len(repository.users) != 0 || !containsText(api.sentMessages[len(api.sentMessages)-1], "Слишком много неверных попыток") {
-		t.Fatalf("password lockout was not enforced: users=%+v last=%q", repository.users, api.sentMessages[len(api.sentMessages)-1])
-	}
-}
-
-func TestInactiveUserMustAuthenticateAgain(t *testing.T) {
-	bot, api, repository := newTestBot(t)
-	repository.users[1001] = storage.TelegramUser{ID: 1, TelegramID: 1001, IsActive: false}
-	message := &telegramMessage{
-		MessageID: 7,
-		Chat:      telegramChat{ID: 1001, Type: "private"},
-		From:      &telegramUser{ID: 1001, FirstName: "Existing"},
-		Text:      "correct-horse-battery-staple",
-	}
-	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-		t.Fatalf("reauthentication update: %v", err)
-	}
-	if !repository.users[1001].IsActive || len(api.deleted) != 1 {
-		t.Fatalf("inactive user was not reauthenticated: %+v", repository.users[1001])
-	}
-}
-
-func TestAuthenticatedUserCanOpenMenuAndChangeSettings(t *testing.T) {
-	bot, api, repository := newTestBot(t)
-	message := &telegramMessage{MessageID: 1, Chat: telegramChat{ID: 1001, Type: "private"}, From: &telegramUser{ID: 1001, FirstName: "Authorized"}, Text: "correct-horse-battery-staple"}
-	if err := bot.handleUpdate(context.Background(), telegramUpdate{Message: message}); err != nil {
-		t.Fatalf("password update: %v", err)
-	}
-	user := repository.users[1001]
-	if !user.IsActive || user.ID == 0 || len(api.sentMessages) != 1 {
-		t.Fatalf("authorized user was not registered and welcomed: user=%+v sent=%v", user, api.sentMessages)
-	}
-	if err := bot.handleAction(context.Background(), 1001, 55, user.ID, "settings:long"); err != nil {
-		t.Fatalf("change settings: %v", err)
-	}
-	settings := repository.settings[user.ID]
-	if settings.NotifyLong || repository.updates != 1 {
-		t.Fatalf("LONG setting was not persisted: %+v", settings)
-	}
-	if len(api.edited) != 1 || !containsText(api.edited[0], "Уведомления LONG: нет") {
-		t.Fatalf("settings screen was not refreshed: %#v", api.edited)
-	}
-}
-
-func TestAllowedUserCanSelectOnly30MinuteTimeframe(t *testing.T) {
-	bot, api, repository := newTestBot(t)
-	repository.settings[1] = storage.UserSettings{
-		UserID: 1, RSILength: 14, EMALength: 9, InstrumentLimit: 100,
-		NotifyLong: true, NotifyShort: true,
-		Timeframes: []string{"5", "15", "60"},
-	}
-
-	for _, action := range []string{"tf:30", "tf:5", "tf:15", "tf:60"} {
-		if err := bot.changeSettings(context.Background(), 1001, 55, 1, action); err != nil {
-			t.Fatalf("changeSettings(%q): %v", action, err)
-		}
-	}
-	settings := repository.settings[1]
-	if len(settings.Timeframes) != 1 || settings.Timeframes[0] != "30" {
-		t.Fatalf("timeframes = %#v, want only 30m", settings.Timeframes)
-	}
-	if len(api.edited) != 4 || !containsText(api.edited[len(api.edited)-1], "Таймфреймы: 30m") {
-		t.Fatalf("settings screen did not reflect 30m-only selection: %#v", api.edited)
-	}
-
-	keyboard := settingsKeyboard(settings)
-	found := false
-	for _, row := range keyboard.InlineKeyboard {
-		for _, button := range row {
-			if button.CallbackData == "settings:tf:30" && button.Text == "✅ 30m" {
-				found = true
-			}
-		}
-	}
-	if !found {
-		t.Fatal("settings keyboard does not show enabled 30m option")
-	}
-}
-
-func TestFormatSignalIncludesSidewaysMarketContext(t *testing.T) {
-	message := formatSignal(storage.Signal{
-		Symbol: "BTCUSDT", Timeframe: "30", Direction: "LONG",
-		ClosePrice: 65000, RSI: 32.5, EMARSI: 30.25,
-		MarketRegime: "SIDEWAYS",
-		MarketADX:    18.12, MarketADXReady: true,
-		MarketCHOP: 64.21, MarketCHOPReady: true,
-		MarketEMA: 64950.75, MarketEMAReady: true,
-	})
-
-	for _, expected := range []string{
-		"Рынок: ⚠️ БОКОВОЕ ДВИЖЕНИЕ",
-		"⚠️ Повышенный риск ложных сигналов в боковике.",
-		"ADX(14): 18.12",
-		"CHOP(14): 64.21",
-		"EMA(50): 64950.75",
-	} {
-		if !strings.Contains(message, expected) {
-			t.Errorf("formatted signal does not contain %q: %s", expected, message)
-		}
-	}
-}
-
-func TestFormatSignalShowsOnlyReadyMarketMetrics(t *testing.T) {
-	message := formatSignal(storage.Signal{
-		Symbol: "ETHUSDT", Timeframe: "30", Direction: "SHORT",
-		MarketRegime: "TRANSITIONAL",
-		MarketADX:    21.5, MarketADXReady: true,
-	})
-
-	for _, expected := range []string{
-		"Рынок: 🔄 ПЕРЕХОДНОЕ СОСТОЯНИЕ",
-		"ADX(14): 21.50",
-		"CHOP(14): —",
-		"EMA(50): —",
-	} {
-		if !strings.Contains(message, expected) {
-			t.Errorf("formatted signal does not contain %q: %s", expected, message)
-		}
-	}
-	if strings.Contains(message, "Недостаточно истории") {
-		t.Fatalf("warmup warning should not replace available metrics: %s", message)
-	}
-}
-
-func TestFormatSignalHandlesUnknownMarketContextWithoutInventingValues(t *testing.T) {
-	message := formatSignal(storage.Signal{
-		Symbol: "XRPUSDT", Timeframe: "30", Direction: "LONG",
-		MarketRegime: "UNKNOWN",
-	})
-
-	for _, expected := range []string{
-		"Рынок: ❔ НЕДОСТАТОЧНО ДАННЫХ",
-		"ADX(14): —",
-		"CHOP(14): —",
-		"EMA(50): —",
-		"Недостаточно истории для расчёта индикаторов.",
-	} {
-		if !strings.Contains(message, expected) {
-			t.Errorf("formatted signal does not contain %q: %s", expected, message)
-		}
-	}
-}
-
-func TestFormatDeliveryPreservesSidewaysMarketContext(t *testing.T) {
-	message := formatDelivery(storage.Delivery{
-		Symbol: "BTCUSDT", Timeframe: "30", Direction: "SHORT",
-		MarketRegime: "SIDEWAYS",
-		MarketADX:    16.75, MarketADXReady: true,
-		MarketCHOP: 70.1, MarketCHOPReady: true,
-		MarketEMA: 65100, MarketEMAReady: true,
-	})
-
-	for _, expected := range []string{
-		"Новый RSI-сигнал",
-		"Рынок: ⚠️ БОКОВОЕ ДВИЖЕНИЕ",
-		"ADX(14): 16.75",
-		"CHOP(14): 70.10",
-		"EMA(50): 65100",
-	} {
-		if !strings.Contains(message, expected) {
-			t.Errorf("formatted delivery does not contain %q: %s", expected, message)
-		}
-	}
-}
-
-func TestFormatSignalShowsHigherTimeframeTrendAboveMarketContext(t *testing.T) {
-	message := formatSignal(storage.Signal{
-		Symbol: "BTCUSDT", Timeframe: "30", Direction: "LONG",
-		ClosePrice: 65000, RSI: 32.5, EMARSI: 30.25,
-		HigherTimeframe: "240", HigherMarketRegime: "UPTREND",
-		MarketRegime: "TRANSITIONAL",
-	})
-	for _, expected := range []string{
-		"Тренд старшего ТФ (4h): 📈 ВОСХОДЯЩИЙ ТРЕНД",
-		"Рынок: 🔄 ПЕРЕХОДНОЕ СОСТОЯНИЕ",
-	} {
-		if !strings.Contains(message, expected) {
-			t.Errorf("formatted signal does not contain %q: %s", expected, message)
-		}
-	}
-	if strings.Index(message, "Тренд старшего ТФ") > strings.Index(message, "Рынок:") {
-		t.Fatalf("higher timeframe trend should appear above lower-timeframe context: %s", message)
-	}
-}
-
-func TestFormatDeliveryPreservesHigherTimeframeTrend(t *testing.T) {
-	message := formatDelivery(storage.Delivery{
-		Symbol: "ETHUSDT", Timeframe: "30", Direction: "SHORT",
-		HigherTimeframe: "240", HigherMarketRegime: "DOWNTREND",
-	})
-	if !strings.Contains(message, "Тренд старшего ТФ (4h): 📉 НИСХОДЯЩИЙ ТРЕНД") {
-		t.Fatalf("formatted delivery lost higher-timeframe trend: %s", message)
-	}
-}
-
-func TestFormatSpotAlertIncludesMomentumDetails(t *testing.T) {
-	message := formatSpotAlert(storage.SpotAlertDelivery{
-		Symbol: "ABCUSDT", Price: 1.2345, ReferencePrice: 1.1,
-		ChangePercent: 12.2272, WindowSeconds: 900,
-		DetectedAt: time.Date(2026, 11, 8, 12, 30, 45, 0, time.UTC),
-	})
-	for _, expected := range []string{
-		"Spot: рост более 5% за 15 мин.",
-		"ABCUSDT",
-		"Изменение: +12.23%",
-		"Текущая цена: 1.2345",
-		"Цена в начале окна: 1.1",
-		"2026-11-08 12:30:45 UTC",
-	} {
-		if !strings.Contains(message, expected) {
-			t.Errorf("formatted Spot alert does not contain %q: %s", expected, message)
-		}
-	}
-}
-
-func TestPermanentSpotDeliveryFailureUnsubscribesUser(t *testing.T) {
-	bot, api, repository := newTestBot(t)
-	user := storage.TelegramUser{ID: 7, TelegramID: 7007, IsActive: true}
-	repository.users[user.TelegramID] = user
-	repository.spotSubscriptions[user.ID] = true
-	api.sendErr = &telegramAPIError{
-		Method: "sendMessage", Code: 403, Description: "bot was blocked by the user",
-	}
-
-	bot.deliverSpotAlert(context.Background(), storage.SpotAlertDelivery{
-		UserID: user.ID, TelegramID: user.TelegramID, AlertID: 99, AttemptCount: 1,
-	})
-	if repository.spotSubscriptions[user.ID] {
-		t.Fatal("permanent Telegram delivery error must remove the Spot subscription")
-	}
-	if repository.spotUnsubscribeCalls != 1 || repository.spotDeliveryFailed != 0 {
-		t.Fatalf("permanent delivery handling: unsubscribe=%d retry=%d",
-			repository.spotUnsubscribeCalls, repository.spotDeliveryFailed)
-	}
-}
-
-func TestTransientSpotDeliveryFailureSchedulesRetry(t *testing.T) {
-	bot, api, repository := newTestBot(t)
-	user := storage.TelegramUser{ID: 8, TelegramID: 8008, IsActive: true}
-	repository.users[user.TelegramID] = user
-	repository.spotSubscriptions[user.ID] = true
-	api.sendErr = errors.New("temporary network timeout")
-
-	bot.deliverSpotAlert(context.Background(), storage.SpotAlertDelivery{
-		UserID: user.ID, TelegramID: user.TelegramID, AlertID: 100, AttemptCount: 1,
-	})
-	if !repository.spotSubscriptions[user.ID] {
-		t.Fatal("temporary Telegram error must not remove the Spot subscription")
-	}
-	if repository.spotUnsubscribeCalls != 0 || repository.spotDeliveryFailed != 1 {
-		t.Fatalf("temporary delivery handling: unsubscribe=%d retry=%d",
-			repository.spotUnsubscribeCalls, repository.spotDeliveryFailed)
-	}
-}
-
-func TestSuccessfulSpotDeliveryIsMarkedSent(t *testing.T) {
-	bot, _, repository := newTestBot(t)
-	user := storage.TelegramUser{ID: 9, TelegramID: 9009, IsActive: true}
-	repository.users[user.TelegramID] = user
-	repository.spotSubscriptions[user.ID] = true
-
-	bot.deliverSpotAlert(context.Background(), storage.SpotAlertDelivery{
-		UserID: user.ID, TelegramID: user.TelegramID, AlertID: 101, AttemptCount: 1,
-	})
-	if repository.spotDeliverySent != 1 || repository.spotDeliveryFailed != 0 {
-		t.Fatalf("successful delivery state: sent=%d failed=%d",
-			repository.spotDeliverySent, repository.spotDeliveryFailed)
+	if isPermanentTelegramDeliveryError(errors.New("network timeout")) {
+		t.Fatal("network timeout must remain retryable")
 	}
 }

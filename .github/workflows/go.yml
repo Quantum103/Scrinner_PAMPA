@@ -15,18 +15,18 @@ jobs:
       postgres:
         image: postgres:18-alpine
         env:
-          POSTGRES_DB: rsi_scanner_test
-          POSTGRES_USER: rsi_test
-          POSTGRES_PASSWORD: rsi_test
+          POSTGRES_DB: spot_scanner_test
+          POSTGRES_USER: spot_test
+          POSTGRES_PASSWORD: spot_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U rsi_test -d rsi_scanner_test"
+          --health-cmd "pg_isready -U spot_test -d spot_scanner_test"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      DATABASE_TEST_URL: postgres://rsi_test:rsi_test@localhost:5432/rsi_scanner_test?sslmode=disable
+      DATABASE_TEST_URL: postgres://spot_test:spot_test@localhost:5432/spot_scanner_test?sslmode=disable
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,11 +43,7 @@ jobs:
           if [ -n "$unformatted" ]; then
             echo "The following Go files are not gofmt-formatted:"
             echo "$unformatted"
-            while IFS= read -r file; do
-              echo "::group::gofmt diff: $file"
-              gofmt -d "$file" || true
-              echo "::endgroup::"
-            done <<< "$unformatted"
+            gofmt -d ./cmd ./internal || true
             exit 1
           fi
       - name: Test (unit and PostgreSQL integration)
@@ -58,23 +54,3 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build ./...
-      - name: Indicator benchmarks
-        run: go test ./internal/indicators -run=^NoTestsWillMatch -bench=BenchmarkCalculate -benchmem -benchtime=1x
-      - name: Scanner load benchmarks
-        run: |
-          go test ./internal/scanner -run=^NoTestsWillMatch -bench=BenchmarkPersonalizedScan -benchmem -benchtime=1x
-          go test ./internal/scanner -run=^NoTestsWillMatch -bench=BenchmarkProfileRoutingCache -benchmem -benchtime=1x
-      - name: Create isolated benchmark database
-        run: |
-          postgres_container="$(docker ps --filter "ancestor=postgres:18-alpine" --format "{{.ID}}" | head -n 1)"
-          if [ -z "$postgres_container" ]; then
-            echo "PostgreSQL service container was not found" >&2
-            exit 1
-          fi
-          docker exec "$postgres_container" createdb -U rsi_test rsi_scanner_bench
-      - name: PostgreSQL load benchmarks
-        env:
-          DATABASE_BENCH_URL: postgres://rsi_test:rsi_test@localhost:5432/rsi_scanner_bench?sslmode=disable
-        run: |
-          go test ./internal/storage -run=^NoTestsWillMatch -bench=BenchmarkListScannerWorkloads -benchmem -benchtime=1x
-          go test ./internal/storage -run=^NoTestsWillMatch -bench=BenchmarkCommitScannerProfileCandleWithoutSignal -benchmem -benchtime=1x

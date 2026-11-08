@@ -188,13 +188,11 @@ func (c *apiClient) getMe(ctx context.Context) (telegramUser, error) {
 
 func (c *apiClient) setMyCommands(ctx context.Context) error {
 	commands := []map[string]string{
-		{"command": "start", "description": "Открыть главное меню"},
-		{"command": "signals", "description": "Последние сигналы"},
-		{"command": "history", "description": "История сигналов"},
-		{"command": "settings", "description": "Настройки сканера"},
-		{"command": "instruments", "description": "Мои исключения и включения"},
+		{"command": "start", "description": "Включить уведомления о росте"},
+		{"command": "stop", "description": "Отключить уведомления"},
+		{"command": "history", "description": "История сигналов роста"},
+		{"command": "clearhistory", "description": "Очистить свою историю"},
 		{"command": "help", "description": "Справка"},
-		{"command": "stop", "description": "Отключить Spot-уведомления"},
 	}
 	return c.call(ctx, "setMyCommands", map[string]any{"commands": commands}, nil)
 }

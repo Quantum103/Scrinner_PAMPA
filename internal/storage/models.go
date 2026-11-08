@@ -2,7 +2,6 @@ package storage
 
 import "time"
 
-// TelegramUser is a Telegram account stored in the application database.
 type TelegramUser struct {
 	ID           int64
 	TelegramID   int64
@@ -16,116 +15,6 @@ type TelegramUser struct {
 	LastSeenAt   time.Time
 }
 
-// UserSettings contains scanner options that belong to one Telegram user.
-type UserSettings struct {
-	UserID             int64
-	RSILength          int
-	EMALength          int
-	InstrumentLimit    int
-	ScanAllInstruments bool
-	NotifyLong         bool
-	NotifyShort        bool
-	NotifyConfluence   bool
-	Timeframes         []string
-}
-
-// Instrument is an entry from the Bybit Linear USDT perpetual catalogue.
-type Instrument struct {
-	Symbol              string
-	BaseCoin            string
-	QuoteCoin           string
-	SettleCoin          string
-	ContractType        string
-	Status              string
-	IsActive            bool
-	Turnover24h         string
-	LastPrice           string
-	InstrumentUpdatedAt time.Time
-	TickerUpdatedAt     *time.Time
-}
-
-// InstrumentPreference is a user-specific explicit include or exclude rule.
-type InstrumentPreference struct {
-	Symbol     string
-	Preference string
-	UpdatedAt  time.Time
-}
-
-// Signal represents one confirmed RSI/EMA crossover on a closed candle.
-type Signal struct {
-	ID          int64
-	RSILength   int
-	EMALength   int
-	Symbol      string
-	Timeframe   string
-	Direction   string
-	CandleStart time.Time
-	CandleClose time.Time
-	ClosePrice  float64
-	RSI         float64
-	EMARSI      float64
-
-	MarketRegime    string
-	MarketADX       float64
-	MarketADXReady  bool
-	MarketCHOP      float64
-	MarketCHOPReady bool
-	MarketEMA       float64
-	MarketEMAReady  bool
-
-	HigherTimeframe    string
-	HigherMarketRegime string
-
-	DetectedAt time.Time
-}
-
-// ScannerState is the durable processing cursor and the last calculated values.
-type ScannerState struct {
-	Symbol                   string
-	Timeframe                string
-	LastProcessedCandleStart time.Time
-	LastClose                float64
-	LastRSI                  float64
-	LastEMARSI               float64
-	LastCrossDirection       string
-	LastCrossAt              *time.Time
-	Initialized              bool
-	UpdatedAt                time.Time
-}
-
-// Delivery is one signal notification assigned to a Telegram user.
-type Delivery struct {
-	UserID       int64
-	RSILength    int
-	EMALength    int
-	TelegramID   int64
-	SignalID     int64
-	Status       string
-	AttemptCount int
-	Symbol       string
-	Timeframe    string
-	Direction    string
-	CandleStart  time.Time
-	CandleClose  time.Time
-	ClosePrice   float64
-	RSI          float64
-	EMARSI       float64
-
-	MarketRegime    string
-	MarketADX       float64
-	MarketADXReady  bool
-	MarketCHOP      float64
-	MarketCHOPReady bool
-	MarketEMA       float64
-	MarketEMAReady  bool
-
-	HigherTimeframe    string
-	HigherMarketRegime string
-
-	DetectedAt time.Time
-}
-
-// SpotMomentumAlert is a Spot market move detected by the rolling price tracker.
 type SpotMomentumAlert struct {
 	ID             int64
 	Symbol         string
@@ -137,7 +26,6 @@ type SpotMomentumAlert struct {
 	WindowSeconds  int
 }
 
-// SpotAlertDelivery is one durable Spot alert notification assigned to a Telegram user.
 type SpotAlertDelivery struct {
 	UserID         int64
 	TelegramID     int64
@@ -152,12 +40,13 @@ type SpotAlertDelivery struct {
 	WindowSeconds  int
 }
 
-// SignalFilters limits a user's signal history.
-type SignalFilters struct {
-	Symbol    string
-	Direction string
-	Timeframe string
-	Since     *time.Time
-	Limit     int
-	Offset    int
+type SpotAlertHistoryItem struct {
+	ID             int64
+	Symbol         string
+	DetectedAt     time.Time
+	ReferenceAt    time.Time
+	Price          float64
+	ReferencePrice float64
+	ChangePercent  float64
+	WindowSeconds  int
 }
