@@ -134,6 +134,12 @@ func (s *spotAlertSpool) Ack(expected storage.SpotMomentumAlert) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Older spool records did not contain a threshold. Keep direct callers
+	// compatible with the default rule, just like Peek does when decoding.
+	if expected.ThresholdPercent == 0 {
+		expected.ThresholdPercent = storage.DefaultSpotAlertThreshold
+	}
+
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return fmt.Errorf("read Spot alert spool before acknowledge: %w", err)
